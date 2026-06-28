@@ -1,6 +1,130 @@
 name: assistant-t3
 
 project_files:
-  - docker-compose.assistant-t3.yaml
+  - commands/web/t3
+
+post_install_actions:
+  - |
+    #ddev-description:Render Assistant T3 DDEV configuration
+    set -eu
+
+    env_file=".env.assistant-t3"
+
+    ensure_env_var() {
+      key="$1"
+      value="$2"
+      if [ ! -f "${env_file}" ] || ! grep -Eq "^${key}=" "${env_file}"; then
+        printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+      fi
+    }
+
+    read_env_var() {
+      key="$1"
+      [ -f "${env_file}" ] || return 0
+      awk -v key="${key}" '
+        BEGIN { FS = "=" }
+        $1 == key {
+          value = substr($0, index($0, "=") + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          gsub(/^"|"$/, "", value)
+          gsub(/^'\''|'\''$/, "", value)
+          print value
+          exit
+        }
+      ' "${env_file}"
+    }
+
+    validate_port() {
+      name="$1"
+      port="$2"
+      case "${port}" in
+        ''|*[!0-9]*)
+          echo "assistant-t3: ${name} must be a numeric TCP port, got '${port}'" >&2
+          exit 1
+          ;;
+      esac
+      if [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+        echo "assistant-t3: ${name} must be between 1 and 65535, got '${port}'" >&2
+        exit 1
+      fi
+    }
+
+    if [ ! -f "${env_file}" ]; then
+      {
+        echo "#ddev-generated"
+        echo "# User-editable Assistant T3 add-on configuration."
+        echo "# Re-run 'ddev add-on get e0ipso/ddev-assistant-t3' and 'ddev restart' after changing port or version values."
+      } > "${env_file}"
+    fi
+
+    if [ -f docker-compose.assistant-t3.yaml ] && grep -q "#ddev-generated" docker-compose.assistant-t3.yaml; then
+      rm -f docker-compose.assistant-t3.yaml
+    fi
+
+    ensure_env_var "ASSISTANT_T3_VERSION" "latest"
+    ensure_env_var "ASSISTANT_T3_HTTP_PORT" ""
+    ensure_env_var "ASSISTANT_T3_HTTPS_PORT" ""
+    ensure_env_var "ASSISTANT_T3_CONTAINER_PORT" "3773"
+
+    sitename="${DDEV_SITENAME:-}"
+    if [ -z "${sitename}" ] && [ -f "config.yaml" ]; then
+      sitename="$(awk -F: '/^name:/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' config.yaml)"
+    fi
+    if [ -z "${sitename}" ]; then
+      echo "assistant-t3: unable to determine DDEV project name for deterministic port calculation" >&2
+      exit 1
+    fi
+
+    hash="$(printf '%s' "${sitename}" | cksum | awk '{print $1}')"
+    offset="$(( (hash % 4500) * 2 ))"
+    calculated_http_port="$(( 20000 + offset ))"
+    calculated_https_port="$(( calculated_http_port + 1 ))"
+
+    version="$(read_env_var ASSISTANT_T3_VERSION)"
+    http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
+    https_port="$(read_env_var ASSISTANT_T3_HTTPS_PORT)"
+    container_port="$(read_env_var ASSISTANT_T3_CONTAINER_PORT)"
+
+    version="${version:-latest}"
+    http_port="${http_port:-${calculated_http_port}}"
+    https_port="${https_port:-${calculated_https_port}}"
+    container_port="${container_port:-3773}"
+
+    validate_port "ASSISTANT_T3_HTTP_PORT" "${http_port}"
+    validate_port "ASSISTANT_T3_HTTPS_PORT" "${https_port}"
+    validate_port "ASSISTANT_T3_CONTAINER_PORT" "${container_port}"
+
+    if [ "${http_port}" = "${https_port}" ]; then
+      echo "assistant-t3: ASSISTANT_T3_HTTP_PORT and ASSISTANT_T3_HTTPS_PORT must differ" >&2
+      exit 1
+    fi
+
+    cat > config.assistant-t3.yaml <<EOF
+    #ddev-generated
+    # Expose T3 from the web container through stable project-specific DDEV ports.
+    nodejs_version: "22"
+    web_extra_exposed_ports:
+      - name: assistant-t3
+        container_port: ${container_port}
+        http_port: ${http_port}
+        https_port: ${https_port}
+    EOF
+
+    mkdir -p web-build t3
+    cat > web-build/Dockerfile.assistant-t3 <<EOF
+    #ddev-generated
+    RUN set -eux; \\
+        if ! command -v npm >/dev/null 2>&1; then \\
+          echo "assistant-t3: npm is required to install T3 in the web container" >&2; \\
+          exit 1; \\
+        fi; \\
+        npm install --global "t3@${version}"; \\
+        command -v t3 >/dev/null; \\
+        t3 --version
+    EOF
+
+    if [ ! -f t3/settings.json ]; then
+      printf '{}\n' > t3/settings.json
+    fi
 
 ddev_version_constraint: '>= v1.24.10'

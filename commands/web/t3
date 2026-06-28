@@ -1,0 +1,188 @@
+#!/bin/bash
+
+## Description: Manage T3 Code in the DDEV web container
+## Usage: t3 start [-- <extra t3 serve args>]
+## Example: "ddev t3 start"
+
+#ddev-generated
+
+set -euo pipefail
+
+DDEV_CONFIG_DIR="${DDEV_CONFIG_DIR:-/mnt/ddev_config}"
+DDEV_APPROOT_DIR="${DDEV_APPROOT_DIR:-/var/www/html}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ddev t3 start [-- <extra t3 serve args>]
+  ddev t3 help
+
+Commands:
+  start   Run "t3 serve" in the web container foreground
+  help    Show this help
+EOF
+}
+
+read_env_var() {
+  local key="$1"
+  local env_file="${DDEV_CONFIG_DIR}/.env.assistant-t3"
+
+  [ -f "${env_file}" ] || return 0
+  awk -v key="${key}" '
+    BEGIN { FS = "=" }
+    $1 == key {
+      value = substr($0, index($0, "=") + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      gsub(/^'\''|'\''$/, "", value)
+      print value
+      exit
+    }
+  ' "${env_file}"
+}
+
+read_ddev_config_port() {
+  local key="$1"
+  local config_file="${DDEV_CONFIG_DIR}/config.assistant-t3.yaml"
+
+  [ -f "${config_file}" ] || return 0
+  awk -v key="${key}" '
+    $1 == key ":" {
+      print $2
+      exit
+    }
+  ' "${config_file}"
+}
+
+validate_port() {
+  local name="$1"
+  local port="$2"
+
+  case "${port}" in
+    ''|*[!0-9]*)
+      echo "assistant-t3: ${name} must be a numeric TCP port, got '${port}'" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+    echo "assistant-t3: ${name} must be between 1 and 65535, got '${port}'" >&2
+    exit 1
+  fi
+}
+
+calculate_default_ports() {
+  local sitename="${DDEV_SITENAME:-${DDEV_PROJECT:-}}"
+
+  if [ -z "${sitename}" ]; then
+    echo "assistant-t3: DDEV_SITENAME is not available; cannot calculate default ports" >&2
+    exit 1
+  fi
+
+  local hash offset
+  hash="$(printf '%s' "${sitename}" | cksum | awk '{print $1}')"
+  offset="$(( (hash % 4500) * 2 ))"
+  ASSISTANT_T3_DEFAULT_HTTP_PORT="$(( 20000 + offset ))"
+  ASSISTANT_T3_DEFAULT_HTTPS_PORT="$(( ASSISTANT_T3_DEFAULT_HTTP_PORT + 1 ))"
+}
+
+prepare_t3_home() {
+  local sitename="${DDEV_SITENAME:-${DDEV_PROJECT:-default}}"
+  local t3_config_dir="${DDEV_CONFIG_DIR}/t3"
+  local t3_runtime_home="${ASSISTANT_T3_RUNTIME_DIR:-/mnt/ddev-global-cache/assistant-t3/${sitename}}"
+  local t3_runtime_userdata="${t3_runtime_home}/userdata"
+  local settings_file="${t3_config_dir}/settings.json"
+  local settings_link="${t3_runtime_userdata}/settings.json"
+
+  mkdir -p "${t3_config_dir}" "${t3_runtime_userdata}"
+  if [ ! -f "${settings_file}" ]; then
+    printf '{}\n' > "${settings_file}"
+  fi
+
+  if [ -e "${settings_link}" ] && [ ! -L "${settings_link}" ]; then
+    echo "assistant-t3: ${settings_link} exists and is not a symlink; refusing to hide user data" >&2
+    exit 1
+  fi
+
+  ln -sfn "${settings_file}" "${settings_link}"
+  T3CODE_RUNTIME_HOME="${t3_runtime_home}"
+}
+
+start_t3() {
+  if ! command -v t3 >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+assistant-t3: T3 is not available in the web container.
+
+Run "ddev restart" to rebuild the web image after installing the add-on.
+If the rebuild already ran, inspect the web image build output for the T3 npm install failure.
+EOF
+    exit 1
+  fi
+
+  calculate_default_ports
+
+  local env_container_port env_http_port env_https_port
+  local config_container_port config_http_port config_https_port
+  local container_port http_port https_port hostname
+
+  env_container_port="$(read_env_var ASSISTANT_T3_CONTAINER_PORT)"
+  env_http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
+  env_https_port="$(read_env_var ASSISTANT_T3_HTTPS_PORT)"
+
+  config_container_port="$(read_ddev_config_port container_port)"
+  config_http_port="$(read_ddev_config_port http_port)"
+  config_https_port="$(read_ddev_config_port https_port)"
+
+  container_port="${config_container_port:-${env_container_port:-3773}}"
+  http_port="${config_http_port:-${env_http_port:-${ASSISTANT_T3_DEFAULT_HTTP_PORT}}}"
+  https_port="${config_https_port:-${env_https_port:-${ASSISTANT_T3_DEFAULT_HTTPS_PORT}}}"
+
+  validate_port "ASSISTANT_T3_CONTAINER_PORT" "${container_port}"
+  validate_port "ASSISTANT_T3_HTTP_PORT" "${http_port}"
+  validate_port "ASSISTANT_T3_HTTPS_PORT" "${https_port}"
+
+  if [ "${http_port}" = "${https_port}" ]; then
+    echo "assistant-t3: ASSISTANT_T3_HTTP_PORT and ASSISTANT_T3_HTTPS_PORT must differ" >&2
+    exit 1
+  fi
+
+  prepare_t3_home
+
+  hostname="${DDEV_SITENAME:-${DDEV_PROJECT:-}}.ddev.site"
+  if [ "${hostname}" = ".ddev.site" ]; then
+    echo "assistant-t3: DDEV_SITENAME is not available; cannot print project URLs" >&2
+    exit 1
+  fi
+
+  cat <<EOF
+T3 URLs:
+  http://${hostname}:${http_port}
+  https://${hostname}:${https_port}
+
+Starting T3 in the web container. Press Ctrl-C to stop it.
+EOF
+
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+
+  export T3CODE_HOME="${T3CODE_RUNTIME_HOME}"
+  cd "${DDEV_APPROOT_DIR}"
+  exec t3 serve --mode web --host 0.0.0.0 --port "${container_port}" --base-dir "${T3CODE_HOME}" --no-browser "$@"
+}
+
+subcommand="${1:-help}"
+case "${subcommand}" in
+  start)
+    shift
+    start_t3 "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "assistant-t3: unknown command '${subcommand}'" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
