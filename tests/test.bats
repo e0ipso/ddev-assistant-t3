@@ -52,6 +52,9 @@ health_checks() {
   assert_file_exists ".ddev/t3/settings.json"
   assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
 
+  run grep -E "apt-get install -y --no-install-recommends .*g\\+\\+.*make.*python3" ".ddev/web-build/Dockerfile.assistant-t3"
+  assert_success
+
   run grep -E "container_port: ${expected_container_port}$" ".ddev/config.assistant-t3.yaml"
   assert_success
   run grep -E "http_port: ${expected_http_port}$" ".ddev/config.assistant-t3.yaml"

@@ -114,6 +114,10 @@ post_install_actions:
     cat > web-build/Dockerfile.assistant-t3 <<EOF
     #ddev-generated
     RUN set -eux; \\
+        export DEBIAN_FRONTEND=noninteractive; \\
+        apt-get update; \\
+        apt-get install -y --no-install-recommends g++ make python3; \\
+        rm -rf /var/lib/apt/lists/*; \\
         if ! command -v npm >/dev/null 2>&1; then \\
           echo "assistant-t3: npm is required to install T3 in the web container" >&2; \\
           exit 1; \\
