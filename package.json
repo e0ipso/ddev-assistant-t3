@@ -1,10 +1,12 @@
 {
   "name": "ddev-assistant-t3",
-  "version": "0.0.0-development",
+  "version": "1.0.0",
   "private": true,
   "description": "DDEV add-on that integrates T3 Code into DDEV development environments",
   "release": {
-    "branches": ["main"],
+    "branches": [
+      "main"
+    ],
     "plugins": [
       "@semantic-release/commit-analyzer",
       "@semantic-release/release-notes-generator",
