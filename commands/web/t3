@@ -96,7 +96,53 @@ prepare_t3_home() {
 
   mkdir -p "${t3_config_dir}" "${t3_runtime_userdata}"
   if [ ! -f "${settings_file}" ]; then
-    printf '{}\n' > "${settings_file}"
+    cat > "${settings_file}" <<'EOF'
+{
+  "enableAssistantStreaming": false,
+  "enableProviderUpdateChecks": true,
+  "automaticGitFetchInterval": 30000,
+  "defaultThreadEnvMode": "local",
+  "newWorktreesStartFromOrigin": false,
+  "addProjectBaseDirectory": "",
+  "textGenerationModelSelection": {
+    "instanceId": "codex",
+    "model": "gpt-5.4-mini"
+  },
+  "observability": {
+    "otlpTracesUrl": "",
+    "otlpMetricsUrl": ""
+  },
+  "providers": {
+    "codex": {
+      "enabled": true,
+      "binaryPath": "codex",
+      "homePath": "",
+      "shadowHomePath": ""
+    },
+    "claudeAgent": {
+      "enabled": true,
+      "binaryPath": "claude",
+      "homePath": "",
+      "launchArgs": ""
+    },
+    "cursor": {
+      "enabled": true,
+      "binaryPath": "agent",
+      "apiEndpoint": ""
+    },
+    "grok": {
+      "enabled": true,
+      "binaryPath": "grok"
+    },
+    "opencode": {
+      "enabled": true,
+      "binaryPath": "opencode",
+      "serverUrl": "",
+      "serverPassword": ""
+    }
+  }
+}
+EOF
   fi
 
   if [ -e "${settings_link}" ] && [ ! -L "${settings_link}" ]; then

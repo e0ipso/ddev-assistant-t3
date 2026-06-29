@@ -52,6 +52,17 @@ health_checks() {
   assert_file_exists ".ddev/t3/settings.json"
   assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
 
+  run grep -F '"enableAssistantStreaming": false' ".ddev/t3/settings.json"
+  assert_success
+  run grep -F '"automaticGitFetchInterval": 30000' ".ddev/t3/settings.json"
+  assert_success
+  run grep -F '"instanceId": "codex"' ".ddev/t3/settings.json"
+  assert_success
+  run grep -F '"model": "gpt-5.4-mini"' ".ddev/t3/settings.json"
+  assert_success
+  run grep -F '"opencode":' ".ddev/t3/settings.json"
+  assert_success
+
   run grep -E "apt-get install -y --no-install-recommends .*g\\+\\+.*make.*python3" ".ddev/web-build/Dockerfile.assistant-t3"
   assert_success
 
