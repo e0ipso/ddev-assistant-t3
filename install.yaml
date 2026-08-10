@@ -49,11 +49,37 @@ post_install_actions:
       fi
     }
 
+    validate_bind_address() {
+      address="$1"
+      case "${address}" in
+        \[*\])
+          # IPv6 literal, docker requires the brackets.
+          return 0
+          ;;
+      esac
+      octets="$(printf '%s' "${address}" | awk -F. '
+        NF != 4 { print "invalid"; exit }
+        {
+          for (i = 1; i <= 4; i++) {
+            if ($i !~ /^[0-9]+$/ || $i > 255) { print "invalid"; exit }
+          }
+          print "valid"
+        }
+      ')"
+      if [ "${octets}" != "valid" ]; then
+        echo "assistant-t3: ASSISTANT_T3_DIRECT_BIND_ADDRESS entries must be an IPv4 address or a bracketed IPv6 address, got '${address}'" >&2
+        exit 1
+      fi
+    }
+
     if [ ! -f "${env_file}" ]; then
       {
         echo "#ddev-generated"
         echo "# User-editable Assistant T3 add-on configuration."
         echo "# Re-run 'ddev add-on get e0ipso/ddev-assistant-t3' and 'ddev restart' after changing port or version values."
+        echo "# ASSISTANT_T3_DIRECT_BIND_ADDRESS accepts a comma-separated list of host"
+        echo "# addresses. Add a Tailscale IP to reach T3 from the tailnet, use 0.0.0.0 for"
+        echo "# every interface, or leave it empty to publish nothing outside ddev-router."
       } > "${env_file}"
     fi
 
@@ -65,6 +91,8 @@ post_install_actions:
     ensure_env_var "ASSISTANT_T3_HTTP_PORT" ""
     ensure_env_var "ASSISTANT_T3_HTTPS_PORT" ""
     ensure_env_var "ASSISTANT_T3_CONTAINER_PORT" "3773"
+    ensure_env_var "ASSISTANT_T3_DIRECT_BIND_ADDRESS" "127.0.0.1"
+    ensure_env_var "ASSISTANT_T3_DIRECT_PORT" ""
 
     sitename="${DDEV_SITENAME:-}"
     if [ -z "${sitename}" ] && [ -f "config.yaml" ]; then
@@ -79,16 +107,20 @@ post_install_actions:
     offset="$(( (hash % 4500) * 2 ))"
     calculated_http_port="$(( 20000 + offset ))"
     calculated_https_port="$(( calculated_http_port + 1 ))"
+    calculated_direct_port="$(( 10000 + offset ))"
 
     version="$(read_env_var ASSISTANT_T3_VERSION)"
     http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
     https_port="$(read_env_var ASSISTANT_T3_HTTPS_PORT)"
     container_port="$(read_env_var ASSISTANT_T3_CONTAINER_PORT)"
+    direct_bind_addresses="$(read_env_var ASSISTANT_T3_DIRECT_BIND_ADDRESS)"
+    direct_port="$(read_env_var ASSISTANT_T3_DIRECT_PORT)"
 
     version="${version:-latest}"
     http_port="${http_port:-${calculated_http_port}}"
     https_port="${https_port:-${calculated_https_port}}"
     container_port="${container_port:-3773}"
+    direct_port="${direct_port:-${calculated_direct_port}}"
 
     validate_port "ASSISTANT_T3_HTTP_PORT" "${http_port}"
     validate_port "ASSISTANT_T3_HTTPS_PORT" "${https_port}"
@@ -109,6 +141,59 @@ post_install_actions:
         http_port: ${http_port}
         https_port: ${https_port}
     EOF
+
+    if [ -n "${direct_bind_addresses}" ]; then
+      validate_port "ASSISTANT_T3_DIRECT_PORT" "${direct_port}"
+
+      if [ "${direct_port}" = "${http_port}" ] || [ "${direct_port}" = "${https_port}" ]; then
+        echo "assistant-t3: ASSISTANT_T3_DIRECT_PORT must differ from the ddev-router HTTP and HTTPS ports, got '${direct_port}'" >&2
+        exit 1
+      fi
+
+      # Validate every address before writing, so a rejected list never leaves a
+      # half-written compose file behind for DDEV to read.
+      address_list="$(printf '%s' "${direct_bind_addresses}" | tr ',' ' ')"
+      seen_addresses=""
+      address_count=0
+      wildcard_address=""
+      for address in ${address_list}; do
+        validate_bind_address "${address}"
+        address_count="$(( address_count + 1 ))"
+
+        for seen in ${seen_addresses}; do
+          if [ "${seen}" = "${address}" ]; then
+            echo "assistant-t3: ASSISTANT_T3_DIRECT_BIND_ADDRESS lists '${address}' twice; docker cannot publish the same address and port twice" >&2
+            exit 1
+          fi
+        done
+        seen_addresses="${seen_addresses} ${address}"
+
+        case "${address}" in
+          0.0.0.0|'[::]')
+            wildcard_address="${address}"
+            ;;
+        esac
+      done
+
+      if [ -n "${wildcard_address}" ] && [ "${address_count}" -gt 1 ]; then
+        echo "assistant-t3: ASSISTANT_T3_DIRECT_BIND_ADDRESS combines '${wildcard_address}' with other addresses; ${wildcard_address} already covers every interface and the bindings would collide on port ${direct_port}" >&2
+        exit 1
+      fi
+
+      {
+        echo "#ddev-generated"
+        echo "# Publishes the T3 container port straight on the host, bypassing ddev-router."
+        echo "# ddev-router only answers requests whose Host header matches a project hostname"
+        echo "# and, unless router_bind_all_interfaces is enabled globally, only listens on"
+        echo "# localhost. Neither holds for clients arriving over Tailscale or the LAN."
+        echo "services:"
+        echo "  web:"
+        echo "    ports:"
+        for address in ${address_list}; do
+          echo "      - \"${address}:${direct_port}:${container_port}\""
+        done
+      } > docker-compose.assistant-t3.yaml
+    fi
 
     mkdir -p web-build t3
     cat > web-build/Dockerfile.assistant-t3 <<EOF
