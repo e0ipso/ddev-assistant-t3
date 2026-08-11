@@ -1,3 +1,4 @@
 test_env/
 node_modules/
 .env
+.devcontainer/devcontainer-lock.json
