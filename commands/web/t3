@@ -41,6 +41,13 @@ read_env_var() {
   ' "${env_file}"
 }
 
+read_direct_publishes() {
+  local compose_file="${DDEV_CONFIG_DIR}/docker-compose.assistant-t3.yaml"
+
+  [ -f "${compose_file}" ] || return 0
+  awk -F'"' '/^[[:space:]]*-[[:space:]]*"/ { print $2 }' "${compose_file}"
+}
+
 read_ddev_config_port() {
   local key="$1"
   local config_file="${DDEV_CONFIG_DIR}/config.assistant-t3.yaml"
@@ -170,6 +177,7 @@ EOF
   local env_container_port env_http_port env_https_port
   local config_container_port config_http_port config_https_port
   local container_port http_port https_port hostname
+  local direct_publish direct_bind_address direct_port
 
   env_container_port="$(read_env_var ASSISTANT_T3_CONTAINER_PORT)"
   env_http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
@@ -204,6 +212,27 @@ EOF
 T3 URLs:
   http://${hostname}:${http_port}
   https://${hostname}:${https_port}
+EOF
+
+  while read -r direct_publish; do
+    [ -n "${direct_publish}" ] || continue
+    direct_bind_address="${direct_publish%:*}"
+    direct_bind_address="${direct_bind_address%:*}"
+    direct_port="${direct_publish#"${direct_bind_address}":}"
+    direct_port="${direct_port%:*}"
+    case "${direct_bind_address}" in
+      0.0.0.0|'[::]')
+        echo "  http://<host address>:${direct_port} (direct, every interface, no TLS)"
+        ;;
+      *)
+        echo "  http://${direct_bind_address}:${direct_port} (direct, no TLS)"
+        ;;
+    esac
+  done <<EOF
+$(read_direct_publishes)
+EOF
+
+  cat <<EOF
 
 Starting T3 in the web container. Press Ctrl-C to stop it.
 EOF

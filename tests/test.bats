@@ -42,6 +42,10 @@ health_checks() {
   local expected_http_port="${1}"
   local expected_https_port="${2}"
   local expected_container_port="${3:-3773}"
+  # Space-separated, so the loop below can check every published binding.
+  local expected_direct_bind_addresses="${4:-}"
+  local expected_direct_port="${5:-}"
+  local expected_address
 
   assert_file_exists ".ddev/commands/web/t3"
   run test -x ".ddev/commands/web/t3"
@@ -50,7 +54,19 @@ health_checks() {
   assert_file_exists ".ddev/web-build/Dockerfile.assistant-t3"
   assert_file_exists ".ddev/.env.assistant-t3"
   assert_file_exists ".ddev/t3/settings.json"
-  assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
+
+  if [ -z "${expected_direct_bind_addresses}" ]; then
+    assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
+  else
+    assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
+    for expected_address in ${expected_direct_bind_addresses}; do
+      run grep -F "\"${expected_address}:${expected_direct_port}:${expected_container_port}\"" ".ddev/docker-compose.assistant-t3.yaml"
+      assert_success
+      run docker port "ddev-${PROJNAME}-web" "${expected_container_port}"
+      assert_success
+      assert_output --partial "${expected_address}:${expected_direct_port}"
+    done
+  fi
 
   run grep -F '"enableAssistantStreaming": false' ".ddev/t3/settings.json"
   assert_success
@@ -86,6 +102,35 @@ health_checks() {
   assert_output --partial "http://${PROJNAME}.ddev.site:${expected_http_port}"
   assert_output --partial "https://${PROJNAME}.ddev.site:${expected_https_port}"
   assert_output --partial "Starting T3 in the web container"
+
+  if [ -n "${expected_direct_bind_addresses}" ]; then
+    assert_output --partial ":${expected_direct_port} (direct"
+    assert_direct_port_answers "${expected_direct_port}"
+  fi
+}
+
+# Starts T3, then checks that the directly published port answers HTTP on the host
+# rather than only inside the web container.
+assert_direct_port_answers() {
+  local direct_port="${1}"
+  local t3_pid status=""
+
+  ddev t3 start > "${TESTDIR}/t3-direct.log" 2>&1 &
+  t3_pid=$!
+
+  for _ in $(seq 1 30); do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${direct_port}" || true)"
+    [ "${status}" != "000" ] && [ -n "${status}" ] && break
+    sleep 2
+  done
+
+  kill "${t3_pid}" 2>/dev/null || true
+  wait "${t3_pid}" 2>/dev/null || true
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+
+  if [ "${status}" = "000" ] || [ -z "${status}" ]; then
+    fail "T3 did not answer on http://127.0.0.1:${direct_port}: $(cat "${TESTDIR}/t3-direct.log")"
+  fi
 }
 
 expected_ports_for_project() {
@@ -96,7 +141,7 @@ expected_ports_for_project() {
   offset="$(( (hash % 4500) * 2 ))"
   http_port="$(( 20000 + offset ))"
   https_port="$(( http_port + 1 ))"
-  printf '%s %s\n' "${http_port}" "${https_port}"
+  printf '%s %s %s\n' "${http_port}" "${https_port}" "$(( 10000 + offset ))"
 }
 
 teardown() {
@@ -125,7 +170,82 @@ EOF
   assert_success
   run ddev restart -y
   assert_success
+  read -r _ _ expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
+  health_checks 21000 21001 3774 127.0.0.1 "${expected_direct_port}"
+}
+
+# An empty ASSISTANT_T3_DIRECT_BIND_ADDRESS turns direct publishing off, leaving
+# only the ddev-router ports.
+@test "install with direct publishing disabled" {
+  set -eu -o pipefail
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_VERSION=latest
+ASSISTANT_T3_HTTP_PORT=21000
+ASSISTANT_T3_HTTPS_PORT=21001
+ASSISTANT_T3_CONTAINER_PORT=3774
+ASSISTANT_T3_DIRECT_BIND_ADDRESS=
+EOF
+  echo "# ddev add-on get ${DIR} with project ${PROJNAME} in $(pwd)" >&3
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
   health_checks 21000 21001 3774
+}
+
+@test "install with remote access enabled" {
+  set -eu -o pipefail
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_VERSION=latest
+ASSISTANT_T3_HTTP_PORT=21000
+ASSISTANT_T3_HTTPS_PORT=21001
+ASSISTANT_T3_CONTAINER_PORT=3774
+ASSISTANT_T3_DIRECT_BIND_ADDRESS=0.0.0.0
+ASSISTANT_T3_DIRECT_PORT=11000
+EOF
+  echo "# ddev add-on get ${DIR} with project ${PROJNAME} in $(pwd)" >&3
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  health_checks 21000 21001 3774 0.0.0.0 11000
+}
+
+# Binding several host addresses at once is what keeps a project usable both
+# locally and over Tailscale, so the loopback binding has to survive alongside
+# a second one. 127.0.0.2 stands in for the second address because the whole
+# 127.0.0.0/8 range is bindable on the Linux runners; macOS only has 127.0.0.1.
+@test "install with several direct bind addresses" {
+  set -eu -o pipefail
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_VERSION=latest
+ASSISTANT_T3_HTTP_PORT=21000
+ASSISTANT_T3_HTTPS_PORT=21001
+ASSISTANT_T3_CONTAINER_PORT=3774
+ASSISTANT_T3_DIRECT_BIND_ADDRESS=127.0.0.1,127.0.0.2
+ASSISTANT_T3_DIRECT_PORT=11000
+EOF
+  echo "# ddev add-on get ${DIR} with project ${PROJNAME} in $(pwd)" >&3
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  health_checks 21000 21001 3774 "127.0.0.1 127.0.0.2" 11000
+}
+
+@test "remote access rejects an invalid bind address" {
+  set -eu -o pipefail
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_DIRECT_BIND_ADDRESS=127.0.0.1,laptop.tailnet.ts.net
+EOF
+  run ddev add-on get "${DIR}"
+  assert_failure
+  assert_output --partial "ASSISTANT_T3_DIRECT_BIND_ADDRESS entries must be an IPv4 address"
+  assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
 }
 
 # bats test_tags=release
@@ -136,6 +256,6 @@ EOF
   assert_success
   run ddev restart -y
   assert_success
-  read -r expected_http_port expected_https_port < <(expected_ports_for_project "${PROJNAME}")
-  health_checks "${expected_http_port}" "${expected_https_port}"
+  read -r expected_http_port expected_https_port expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
+  health_checks "${expected_http_port}" "${expected_https_port}" 3773 127.0.0.1 "${expected_direct_port}"
 }
