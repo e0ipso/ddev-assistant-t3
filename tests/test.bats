@@ -102,11 +102,27 @@ health_checks() {
   assert_output --partial "http://${PROJNAME}.ddev.site:${expected_http_port}"
   assert_output --partial "https://${PROJNAME}.ddev.site:${expected_https_port}"
   assert_output --partial "Starting T3 in the web container"
+  refute_output --partial "EROFS"
 
   if [ -n "${expected_direct_bind_addresses}" ]; then
     assert_output --partial ":${expected_direct_port} (direct"
     assert_direct_port_answers "${expected_direct_port}"
   fi
+
+  assert_settings_link_writable
+}
+
+# T3 saves settings.json by creating a temp file beside the symlink target, so
+# the directory the link resolves to has to be writable inside the container.
+assert_settings_link_writable() {
+  local settings_link="/mnt/ddev-global-cache/assistant-t3/${PROJNAME}/userdata/settings.json"
+
+  run ddev exec bash -c "readlink -f '${settings_link}'"
+  assert_success
+  assert_output "/var/www/html/.ddev/t3/settings.json"
+  run ddev exec mktemp /var/www/html/.ddev/t3/settings.json.XXXXXX
+  assert_success
+  ddev exec rm -f "${output}"
 }
 
 # Starts T3, then checks that the directly published port answers HTTP on the host
