@@ -95,7 +95,9 @@ calculate_default_ports() {
 
 prepare_t3_home() {
   local sitename="${DDEV_SITENAME:-${DDEV_PROJECT:-default}}"
-  local t3_config_dir="${DDEV_CONFIG_DIR}/t3"
+  # DDEV mounts /mnt/ddev_config read-only. T3 saves settings.json by writing a
+  # temp file next to the symlink target, so link to the writable app root copy.
+  local t3_config_dir="${DDEV_APPROOT_DIR}/.ddev/t3"
   local t3_runtime_home="${ASSISTANT_T3_RUNTIME_DIR:-/mnt/ddev-global-cache/assistant-t3/${sitename}}"
   local t3_runtime_userdata="${t3_runtime_home}/userdata"
   local settings_file="${t3_config_dir}/settings.json"
