@@ -120,8 +120,9 @@ assert_settings_link_writable() {
   run ddev exec bash -c "readlink -f '${settings_link}'"
   assert_success
   assert_output "/var/www/html/.ddev/t3/settings.json"
-  run ddev exec bash -c "probe=\$(mktemp \"\$(dirname \"\$(readlink -f '${settings_link}')\")/settings.json.XXXXXX\") && rm \"\${probe}\""
+  run ddev exec mktemp /var/www/html/.ddev/t3/settings.json.XXXXXX
   assert_success
+  ddev exec rm -f "${output}"
 }
 
 # Starts T3, then checks that the directly published port answers HTTP on the host
