@@ -195,9 +195,19 @@ post_install_actions:
       } > docker-compose.assistant-t3.yaml
     fi
 
+    # Docker caches the install layer by instruction text, so "t3@latest" would
+    # never move past the version installed on the first build. For dist-tags,
+    # ADD the registry metadata for that tag: BuildKit re-fetches it on every
+    # build and only invalidates the install layer when the tag points elsewhere.
+    cache_bust=""
+    if printf '%s' "${version}" | grep -Eq '^[A-Za-z][A-Za-z0-9._-]*$'; then
+      cache_bust="ADD https://registry.npmjs.org/t3/${version} /tmp/assistant-t3-release.json"
+    fi
+
     mkdir -p web-build t3
     cat > web-build/Dockerfile.assistant-t3 <<EOF
     #ddev-generated
+    ${cache_bust}
     RUN set -eux; \\
         export DEBIAN_FRONTEND=noninteractive; \\
         apt-get update; \\
