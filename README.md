@@ -165,6 +165,15 @@ https_port="$(( http_port + 1 ))"
 
 Hash collisions are possible. Override the ports if two projects calculate the same pair.
 
+## Removal
+
+```bash
+ddev add-on remove assistant-t3
+ddev restart
+```
+
+Removal deletes the generated DDEV files but keeps `.ddev/.env.assistant-t3` and `.ddev/t3/settings.json`, so a later reinstall picks your settings up again. Delete them by hand if you don't need them.
+
 ## Credits
 
 **Contributed and maintained by [@e0ipso](https://github.com/e0ipso)**
