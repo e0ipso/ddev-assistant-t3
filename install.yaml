@@ -204,10 +204,11 @@ post_install_actions:
     fi
 
     # Since 0.0.41 the npm package is a launcher with no dependencies, so the
-    # build needs no compilers. Don't run "t3" here: the launcher downloads T3's
-    # prebuilt runtime into T3CODE_HOME, which would bake a copy into the image
-    # that "ddev t3 start" never uses, since it points T3CODE_HOME at the global
-    # cache.
+    # build needs no compilers. Don't run "t3" here, not even "t3 --version":
+    # the launcher first downloads T3's prebuilt runtime into T3CODE_HOME, which
+    # would bake a copy into the image that "ddev t3 start" never uses, since it
+    # points T3CODE_HOME at the global cache. "npm ls" prints the installed
+    # version without running it.
     mkdir -p web-build t3
     cat > web-build/Dockerfile.assistant-t3 <<EOF
     #ddev-generated
@@ -218,7 +219,8 @@ post_install_actions:
           exit 1; \\
         fi; \\
         npm install --global "t3@${version}"; \\
-        command -v t3 >/dev/null
+        command -v t3 >/dev/null; \\
+        npm ls --global t3
     EOF
 
     if [ ! -f t3/settings.json ] || [ "$(tr -d '[:space:]' < t3/settings.json)" = "{}" ]; then

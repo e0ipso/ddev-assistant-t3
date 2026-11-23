@@ -174,10 +174,12 @@ EOF
     exit 1
   fi
 
-  # The add-on keeps the project's Node.js version, and the t3 launcher needs
-  # 20.11 or later (it uses import.meta.dirname).
-  if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 11) ? 0 : 1)' >/dev/null 2>&1; then
-    echo "assistant-t3: T3 needs Node.js 20.11 or later, but the web container has $(node --version 2>/dev/null || echo 'no Node.js'). Raise nodejs_version in .ddev/config.yaml and run \"ddev restart\"." >&2
+  # The add-on keeps the project's Node.js version, so refuse the ones past their
+  # end of life. From 27 on every Node.js line gets LTS. Drop 22 from this list
+  # after 2027-04-30 and 24 after 2028-04-30, when they reach theirs:
+  # https://github.com/nodejs/Release#release-schedule
+  if ! node -e 'const major = Number(process.versions.node.split(".")[0]); process.exit(major === 22 || major === 24 || major >= 26 ? 0 : 1)' >/dev/null 2>&1; then
+    echo "assistant-t3: T3 needs a Node.js version that hasn't reached its end of life (22, 24, or 26 and later), but the web container has $(node --version 2>/dev/null || echo 'no Node.js'). Change nodejs_version in .ddev/config.yaml and run \"ddev restart\"." >&2
     exit 1
   fi
 

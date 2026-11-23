@@ -25,7 +25,7 @@ ddev restart
 
 After installation, make sure to commit the `.ddev` directory to version control.
 
-T3 runs on the project's Node.js version, which must be 20.11 or later. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into DDEV's global cache, so it needs network access.
+T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions that have reached their end of life: set `nodejs_version` to 22, 24, or 26 and later. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into DDEV's global cache, so it needs network access.
 
 ## Usage
 
@@ -143,7 +143,7 @@ ddev restart
 
 Port and version changes are rendered into generated DDEV files during `ddev add-on get`, so re-run the add-on installation and restart after editing `.ddev/.env.assistant-t3`.
 
-`ASSISTANT_T3_VERSION` accepts an npm dist-tag such as `latest` or an exact version. With a dist-tag, `ddev restart` installs the version the tag currently points to; the web image build checks the npm registry, so it needs network access. Updates installed inside a running container are lost when DDEV recreates it. Versions older than 0.0.41 aren't supported: they shipped the whole server and needed compilers that the add-on no longer installs.
+`ASSISTANT_T3_VERSION` accepts an npm dist-tag such as `latest` or an exact version. With a dist-tag, `ddev restart` installs the version the tag currently points to; the web image build checks the npm registry, so it needs network access. Updates installed inside a running container are lost when DDEV recreates it.
 
 All customization options (use with caution):
 
