@@ -264,6 +264,39 @@ EOF
   assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
 }
 
+# post_install_actions generate most files, so DDEV only removes them through
+# the add-on's removal_actions.
+@test "removal deletes the generated files" {
+  set -eu -o pipefail
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
+
+  run ddev add-on remove assistant-t3
+  assert_success
+  assert_file_not_exists ".ddev/commands/web/t3"
+  assert_file_not_exists ".ddev/config.assistant-t3.yaml"
+  assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
+  assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
+  assert_file_exists ".ddev/.env.assistant-t3"
+  assert_file_exists ".ddev/t3/settings.json"
+}
+
+# Like DDEV does for project_files, removal keeps a file once its
+# #ddev-generated marker is gone.
+@test "removal keeps generated files the user took over" {
+  set -eu -o pipefail
+  run ddev add-on get "${DIR}"
+  assert_success
+  sed -i.bak '/#ddev-generated/d' .ddev/config.assistant-t3.yaml
+  rm -f .ddev/config.assistant-t3.yaml.bak
+
+  run ddev add-on remove assistant-t3
+  assert_success
+  assert_file_exists ".ddev/config.assistant-t3.yaml"
+  assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
+}
+
 # bats test_tags=release
 @test "install from release" {
   set -eu -o pipefail
