@@ -25,7 +25,7 @@ ddev restart
 
 After installation, make sure to commit the `.ddev` directory to version control.
 
-T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions that have reached their end of life: set `nodejs_version` to 22, 24, or 26 and later. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into DDEV's global cache, so it needs network access.
+T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions that the installed T3 doesn't support, according to the `engines` field of its npm package. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into DDEV's global cache, so it needs network access.
 
 ## Usage
 

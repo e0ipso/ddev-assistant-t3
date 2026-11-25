@@ -196,6 +196,17 @@ EOF
   assert_success
   read -r _ _ expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
   health_checks 21000 21001 3774 127.0.0.1 "${expected_direct_port}"
+
+  # "ddev t3 start" refuses a Node.js version outside the engines field of the
+  # installed t3 package. Raising it in place checks that without a rebuild.
+  run ddev exec npm root --global
+  assert_success
+  run ddev exec bash -c "cd '${output}/t3' && sudo npm pkg set 'engines.node=>=99'"
+  assert_success
+  run ddev t3 start
+  assert_failure
+  assert_output --partial "needs Node.js >=99, but the web container has v"
+  refute_output --partial "Starting T3"
 }
 
 # An empty ASSISTANT_T3_DIRECT_BIND_ADDRESS turns direct publishing off, leaving
