@@ -165,8 +165,8 @@ EOF
 
 # T3 only uses Node.js to run its npm launcher, so check the container's Node.js
 # against the engines field of the installed t3 package rather than a list kept
-# here. Releases 0.0.41 to 0.1.0 don't declare one, and get >=20.11, the range
-# later launchers declare. If the check itself can't run, let T3 start.
+# here. Releases 0.0.41 to 0.1.0 don't declare one, so they get no check. If
+# the check itself can't run, let T3 start.
 check_node_version() {
   node - "$(npm root --global 2>/dev/null)" <<'EOF' || exit 1
 const fs = require("fs");
@@ -180,8 +180,8 @@ try {
   console.error(`assistant-t3: could not check which Node.js versions T3 supports, so starting it anyway: ${error.message.split("\n")[0]}`);
   process.exit(0);
 }
-const range = (pkg.engines && pkg.engines.node) || ">=20.11";
-if (!semver.satisfies(process.versions.node, range, { includePrerelease: true })) {
+const range = pkg.engines && pkg.engines.node;
+if (range && !semver.satisfies(process.versions.node, range, { includePrerelease: true })) {
   console.error(`assistant-t3: T3 ${pkg.version} needs Node.js ${range}, but the web container has ${process.version}. Change nodejs_version in .ddev/config.yaml and run "ddev restart".`);
   process.exit(1);
 }
