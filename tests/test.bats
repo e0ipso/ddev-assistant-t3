@@ -79,8 +79,11 @@ health_checks() {
   run grep -F '"opencode":' ".ddev/t3/settings.json"
   assert_success
 
-  run grep -E "apt-get install -y --no-install-recommends .*g\\+\\+.*make.*python3" ".ddev/web-build/Dockerfile.assistant-t3"
-  assert_success
+  # The t3 npm package is a launcher with no dependencies, so the image needs
+  # no compilers, and running it during the build would download the runtime
+  # into the image.
+  run grep -E "apt-get|t3 --version" ".ddev/web-build/Dockerfile.assistant-t3"
+  assert_failure
 
   run grep -E "container_port: ${expected_container_port}$" ".ddev/config.assistant-t3.yaml"
   assert_success
@@ -88,6 +91,11 @@ health_checks() {
   assert_success
   run grep -E "https_port: ${expected_https_port}$" ".ddev/config.assistant-t3.yaml"
   assert_success
+  run grep -E "^nodejs_version:" ".ddev/config.assistant-t3.yaml"
+  assert_failure
+
+  run ddev exec sudo test -e /root/.t3
+  assert_failure
 
   run ddev exec bash -lc "command -v t3 && t3 --version"
   assert_success
@@ -188,6 +196,17 @@ EOF
   assert_success
   read -r _ _ expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
   health_checks 21000 21001 3774 127.0.0.1 "${expected_direct_port}"
+
+  # "ddev t3 start" refuses a Node.js version outside the engines field of the
+  # installed t3 package. Raising it in place checks that without a rebuild.
+  run ddev exec npm root --global
+  assert_success
+  run ddev exec bash -c "cd '${output}/t3' && sudo npm pkg set 'engines.node=>=99'"
+  assert_success
+  run ddev t3 start
+  assert_failure
+  assert_output --partial "needs Node.js >=99, but the web container has v"
+  refute_output --partial "Starting T3"
 }
 
 # An empty ASSISTANT_T3_DIRECT_BIND_ADDRESS turns direct publishing off, leaving

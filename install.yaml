@@ -134,7 +134,6 @@ post_install_actions:
     cat > config.assistant-t3.yaml <<EOF
     #ddev-generated
     # Expose T3 from the web container through stable project-specific DDEV ports.
-    nodejs_version: "22"
     web_extra_exposed_ports:
       - name: assistant-t3
         container_port: ${container_port}
@@ -204,22 +203,24 @@ post_install_actions:
       cache_bust="ADD https://registry.npmjs.org/t3/${version} /tmp/assistant-t3-release.json"
     fi
 
+    # Since 0.0.41 the npm package is a launcher for T3's prebuilt runtime, so
+    # the build needs no compilers. Don't run "t3" here, not even "t3 --version":
+    # since 0.1.1 the launcher first downloads that runtime into T3CODE_HOME,
+    # which would bake a copy into the image that "ddev t3 start" never uses,
+    # since it points T3CODE_HOME at the global cache. "npm ls" prints the
+    # installed version without running it.
     mkdir -p web-build t3
     cat > web-build/Dockerfile.assistant-t3 <<EOF
     #ddev-generated
     ${cache_bust}
     RUN set -eux; \\
-        export DEBIAN_FRONTEND=noninteractive; \\
-        apt-get update; \\
-        apt-get install -y --no-install-recommends g++ make python3; \\
-        rm -rf /var/lib/apt/lists/*; \\
         if ! command -v npm >/dev/null 2>&1; then \\
           echo "assistant-t3: npm is required to install T3 in the web container" >&2; \\
           exit 1; \\
         fi; \\
         npm install --global "t3@${version}"; \\
         command -v t3 >/dev/null; \\
-        t3 --version
+        npm ls --global t3
     EOF
 
     if [ ! -f t3/settings.json ] || [ "$(tr -d '[:space:]' < t3/settings.json)" = "{}" ]; then

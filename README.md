@@ -25,6 +25,8 @@ ddev restart
 
 After installation, make sure to commit the `.ddev` directory to version control.
 
+T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions that the installed T3 doesn't support, according to the `engines` field of its npm package. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into DDEV's global cache, so it needs network access.
+
 ## Usage
 
 | Command | Description |
@@ -134,7 +136,7 @@ To override the exposed ports or installed T3 version:
 ```bash
 ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-http-port=21000
 ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-https-port=21001
-ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-version=0.0.27
+ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-version=0.1.11
 ddev add-on get e0ipso/ddev-assistant-t3
 ddev restart
 ```
