@@ -178,21 +178,37 @@ post_install_actions:
         echo "assistant-t3: ASSISTANT_T3_DIRECT_BIND_ADDRESS combines '${wildcard_address}' with other addresses; ${wildcard_address} already covers every interface and the bindings would collide on port ${direct_port}" >&2
         exit 1
       fi
+    fi
 
-      {
-        echo "#ddev-generated"
-        echo "# Publishes the T3 container port straight on the host, bypassing ddev-router."
-        echo "# ddev-router only answers requests whose Host header matches a project hostname"
-        echo "# and, unless router_bind_all_interfaces is enabled globally, only listens on"
-        echo "# localhost. Neither holds for clients arriving over Tailscale or the LAN."
-        echo "services:"
-        echo "  web:"
+    # DDEV v1.25.6 stopped mounting the shared ddev-global-cache volume in the
+    # web container, so T3CODE_HOME would sit on the container's writable layer
+    # and lose pairings and server identity on every recreate. A per-project
+    # volume keeps that state, and keeps one project's T3 credentials out of
+    # other projects' containers. On older DDEV versions it hides the
+    # assistant-t3 directory of the still-mounted ddev-global-cache volume.
+    # Keep the volume entry unquoted: "ddev t3 start" reads quoted list entries
+    # in this file as direct publishes.
+    {
+      echo "#ddev-generated"
+      echo "services:"
+      echo "  web:"
+      echo "    volumes:"
+      echo "      - assistant-t3-state:/mnt/ddev-global-cache/assistant-t3"
+      if [ -n "${direct_bind_addresses}" ]; then
+        echo "    # Publishes the T3 container port straight on the host, bypassing ddev-router."
+        echo "    # ddev-router only answers requests whose Host header matches a project hostname"
+        echo "    # and, unless router_bind_all_interfaces is enabled globally, only listens on"
+        echo "    # localhost. Neither holds for clients arriving over Tailscale or the LAN."
         echo "    ports:"
         for address in ${address_list}; do
           echo "      - \"${address}:${direct_port}:${container_port}\""
         done
-      } > docker-compose.assistant-t3.yaml
-    fi
+      fi
+      echo ""
+      echo "volumes:"
+      echo "  assistant-t3-state:"
+      echo '    name: "ddev-${DDEV_SITENAME}-assistant"'
+    } > docker-compose.assistant-t3.yaml
 
     # Docker caches the install layer by instruction text, so "t3@latest" would
     # never move past the version installed on the first build. For dist-tags,
