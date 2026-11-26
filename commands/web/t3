@@ -93,6 +93,19 @@ calculate_default_ports() {
   ASSISTANT_T3_DEFAULT_HTTPS_PORT="$(( ASSISTANT_T3_DEFAULT_HTTP_PORT + 1 ))"
 }
 
+# Docker creates the T3 state volume owned by root. Hand its root to the web
+# container user once, so T3 can write its state there.
+ensure_state_dir_writable() {
+  local state_dir="/mnt/ddev-global-cache/assistant-t3"
+
+  [ -d "${state_dir}" ] || return 0
+  [ -w "${state_dir}" ] && return 0
+  if ! sudo -n chown "$(id -u):$(id -g)" "${state_dir}"; then
+    echo "assistant-t3: ${state_dir} is not writable and changing its owner failed" >&2
+    exit 1
+  fi
+}
+
 prepare_t3_home() {
   local sitename="${DDEV_SITENAME:-${DDEV_PROJECT:-default}}"
   # DDEV mounts /mnt/ddev_config read-only. T3 saves settings.json by writing a
@@ -103,6 +116,7 @@ prepare_t3_home() {
   local settings_file="${t3_config_dir}/settings.json"
   local settings_link="${t3_runtime_userdata}/settings.json"
 
+  ensure_state_dir_writable
   mkdir -p "${t3_config_dir}" "${t3_runtime_userdata}"
   if [ ! -f "${settings_file}" ]; then
     cat > "${settings_file}" <<'EOF'

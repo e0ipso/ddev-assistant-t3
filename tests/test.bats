@@ -26,11 +26,13 @@ setup() {
 
   export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
   export PROJNAME="test-$(basename "${GITHUB_REPO}")"
+  export STATE_VOLUME="ddev-${PROJNAME}-assistant"
   mkdir -p "${HOME}/tmp"
   export TESTDIR="$(mktemp -d "${HOME}/tmp/${PROJNAME}.XXXXXX")"
   export DDEV_NONINTERACTIVE=true
   export DDEV_NO_INSTRUMENTATION=true
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
+  docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
   cd "${TESTDIR}"
   run ddev config --project-name="${PROJNAME}" --project-tld=ddev.site
   assert_success
@@ -55,10 +57,15 @@ health_checks() {
   assert_file_exists ".ddev/.env.assistant-t3"
   assert_file_exists ".ddev/t3/settings.json"
 
+  # The compose file always mounts the T3 state volume, and only publishes
+  # ports when a direct bind address is set.
+  assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
+  run grep -F -- "- assistant-t3-state:/mnt/ddev-global-cache/assistant-t3" ".ddev/docker-compose.assistant-t3.yaml"
+  assert_success
   if [ -z "${expected_direct_bind_addresses}" ]; then
-    assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
+    run grep -E "^[[:space:]]*ports:" ".ddev/docker-compose.assistant-t3.yaml"
+    assert_failure
   else
-    assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
     for expected_address in ${expected_direct_bind_addresses}; do
       run grep -F "\"${expected_address}:${expected_direct_port}:${expected_container_port}\"" ".ddev/docker-compose.assistant-t3.yaml"
       assert_success
@@ -118,6 +125,33 @@ health_checks() {
   fi
 
   assert_settings_link_writable
+  assert_state_persists
+}
+
+# T3 keeps pairings, server identity and its database in T3CODE_HOME, so that
+# directory has to be on the project's state volume, not on the container's
+# writable layer that every recreate of the web container throws away.
+assert_state_persists() {
+  local state_dir="/mnt/ddev-global-cache/assistant-t3"
+  local marker="${state_dir}/${PROJNAME}/persistence-marker"
+
+  run docker volume inspect --format '{{.Name}}' "${STATE_VOLUME}"
+  assert_success
+  assert_output "${STATE_VOLUME}"
+
+  run ddev exec findmnt -n -o TARGET,FSTYPE -T "${state_dir}"
+  assert_success
+  assert_output --regexp "^${state_dir}[[:space:]]"
+  refute_output --partial "overlay"
+
+  # Write as the web container user, the user "ddev t3 start" runs as.
+  run ddev exec bash -c "echo kept > '${marker}'"
+  assert_success
+  run ddev restart -y
+  assert_success
+  run ddev exec cat "${marker}"
+  assert_success
+  assert_output "kept"
 }
 
 # T3 saves settings.json by creating a temp file beside the symlink target, so
@@ -171,6 +205,7 @@ expected_ports_for_project() {
 teardown() {
   set -eu -o pipefail
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1
+  docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
   # Persist TESTDIR if running inside GitHub Actions. Useful for uploading test result artifacts
   # See example at https://github.com/ddev/github-action-add-on-test#preserving-artifacts
   if [ -n "${GITHUB_ENV:-}" ]; then
@@ -299,6 +334,11 @@ EOF
   assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
   assert_file_exists ".ddev/.env.assistant-t3"
   assert_file_exists ".ddev/t3/settings.json"
+
+  # Only the user settings stay behind.
+  run find .ddev -name '*.assistant-t3*' ! -name .env.assistant-t3
+  assert_success
+  assert_output ""
 }
 
 # Like DDEV does for project_files, removal keeps a file once its
