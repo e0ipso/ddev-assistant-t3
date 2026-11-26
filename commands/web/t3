@@ -284,6 +284,15 @@ EOF
     shift
   fi
 
+  # T3 sends usage data to its developers unless told otherwise:
+  # https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md
+  # Keep a value the project already passes to the web container, and
+  # otherwise use ASSISTANT_T3_TELEMETRY_ENABLED, which defaults to false.
+  if [ -z "${T3CODE_TELEMETRY_ENABLED:-}" ]; then
+    T3CODE_TELEMETRY_ENABLED="$(read_env_var ASSISTANT_T3_TELEMETRY_ENABLED)"
+  fi
+  export T3CODE_TELEMETRY_ENABLED="${T3CODE_TELEMETRY_ENABLED:-false}"
+
   export T3CODE_HOME="${T3CODE_RUNTIME_HOME}"
   cd "${DDEV_APPROOT_DIR}"
   exec t3 serve --mode web --host 0.0.0.0 --port "${container_port}" --base-dir "${T3CODE_HOME}" --no-browser "$@"

@@ -191,6 +191,37 @@ assert_direct_port_answers() {
   fi
 }
 
+# Starts T3, then checks the T3CODE_TELEMETRY_ENABLED value in the environment
+# of the process "ddev t3 start" runs.
+assert_t3_telemetry() {
+  local expected="${1}"
+  local t3_pid environ=""
+
+  ddev t3 start > "${TESTDIR}/t3-telemetry.log" 2>&1 &
+  t3_pid=$!
+
+  for _ in $(seq 1 30); do
+    environ="$(ddev exec 'pid="$(pgrep -f "^node .*t3 serve" | head -n 1)"; [ -n "${pid}" ] && tr "\0" "\n" < "/proc/${pid}/environ"' 2>/dev/null || true)"
+    [ -n "${environ}" ] && break
+    sleep 1
+  done
+
+  kill "${t3_pid}" 2>/dev/null || true
+  wait "${t3_pid}" 2>/dev/null || true
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+  # T3 takes a few seconds to stop, and the next start must not find it.
+  for _ in $(seq 1 15); do
+    ddev exec 'pgrep -f "^node .*t3 serve"' >/dev/null 2>&1 || break
+    sleep 1
+  done
+
+  if [ -z "${environ}" ]; then
+    fail "T3 did not start: $(cat "${TESTDIR}/t3-telemetry.log")"
+  fi
+  run grep -x "T3CODE_TELEMETRY_ENABLED=${expected}" <<<"${environ}"
+  assert_success
+}
+
 expected_ports_for_project() {
   local project_name="${1}"
   local hash offset http_port https_port
@@ -231,6 +262,15 @@ EOF
   assert_success
   read -r _ _ expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
   health_checks 21000 21001 3774 127.0.0.1 "${expected_direct_port}"
+
+  # T3's telemetry stays off unless the project turns it on. The .env file
+  # above predates the setting, so this also covers projects that upgrade.
+  run grep -x "ASSISTANT_T3_TELEMETRY_ENABLED=false" ".ddev/.env.assistant-t3"
+  assert_success
+  assert_t3_telemetry false
+  run ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-telemetry-enabled=true
+  assert_success
+  assert_t3_telemetry true
 
   # "ddev t3 start" refuses a Node.js version outside the engines field of the
   # installed t3 package. Raising it in place checks that without a rebuild.

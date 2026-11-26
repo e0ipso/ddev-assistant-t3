@@ -118,13 +118,23 @@ and, through them, the project. Prefer listing the specific addresses you need o
 `0.0.0.0`, which also publishes T3 on coffee-shop Wi-Fi and every other attached network,
 and leave remote access off when it is not needed.
 
+## Telemetry
+
+T3 sends usage data to its developers by default ([T3's telemetry docs](https://github.com/pingdotgg/t3code/blob/main/docs/user/telemetry.md)). The add-on turns that off: `ddev t3 start` runs T3 with `T3CODE_TELEMETRY_ENABLED=false`. To turn it on:
+
+```bash
+ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-telemetry-enabled=true
+```
+
+The change applies the next time you run `ddev t3 start`. A `T3CODE_TELEMETRY_ENABLED` value the project already passes to the web container, for example through `web_environment`, takes precedence over this setting.
+
 ## Advanced Customization
 
 Configuration lives in these files:
 
 | File | Purpose |
 | ---- | ------- |
-| `.ddev/.env.assistant-t3` | T3 version and port overrides |
+| `.ddev/.env.assistant-t3` | T3 version, port and telemetry settings |
 | `.ddev/config.assistant-t3.yaml` | Generated DDEV web port exposure |
 | `.ddev/docker-compose.assistant-t3.yaml` | Generated T3 state volume mount, and direct host port publishing when remote access is enabled |
 | `.ddev/t3/settings.json` | T3 server settings, using T3's settings schema |
@@ -155,6 +165,7 @@ All customization options (use with caution):
 | `ASSISTANT_T3_CONTAINER_PORT` | `--assistant-t3-container-port` | `3773` |
 | `ASSISTANT_T3_DIRECT_BIND_ADDRESS` | `--assistant-t3-direct-bind-address` | `127.0.0.1`. Comma-separated list of host addresses; empty publishes nothing |
 | `ASSISTANT_T3_DIRECT_PORT` | `--assistant-t3-direct-port` | Calculated from `DDEV_SITENAME` |
+| `ASSISTANT_T3_TELEMETRY_ENABLED` | `--assistant-t3-telemetry-enabled` | `false`. `true` lets T3 send usage data to its developers, from the next `ddev t3 start` |
 
 The default port pair uses this algorithm:
 

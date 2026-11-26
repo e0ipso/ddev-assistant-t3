@@ -80,6 +80,8 @@ post_install_actions:
         echo "# ASSISTANT_T3_DIRECT_BIND_ADDRESS accepts a comma-separated list of host"
         echo "# addresses. Add a Tailscale IP to reach T3 from the tailnet, use 0.0.0.0 for"
         echo "# every interface, or leave it empty to publish nothing outside ddev-router."
+        echo "# ASSISTANT_T3_TELEMETRY_ENABLED=true lets T3 send usage data to its"
+        echo "# developers. It applies the next time 'ddev t3 start' runs."
       } > "${env_file}"
     fi
 
@@ -93,6 +95,7 @@ post_install_actions:
     ensure_env_var "ASSISTANT_T3_CONTAINER_PORT" "3773"
     ensure_env_var "ASSISTANT_T3_DIRECT_BIND_ADDRESS" "127.0.0.1"
     ensure_env_var "ASSISTANT_T3_DIRECT_PORT" ""
+    ensure_env_var "ASSISTANT_T3_TELEMETRY_ENABLED" "false"
 
     sitename="${DDEV_SITENAME:-}"
     if [ -z "${sitename}" ] && [ -f "config.yaml" ]; then
