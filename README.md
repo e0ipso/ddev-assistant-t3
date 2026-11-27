@@ -7,7 +7,7 @@
 
 ## Overview
 
-This add-on installs [T3 Code](https://github.com/pingdotgg/t3code) in the DDEV `web` container and adds a `ddev t3 start` command that runs `t3 serve` in the foreground.
+This add-on installs [T3 Code](https://github.com/pingdotgg/t3code) in the DDEV `web` container and adds a `ddev t3 start` command that runs `t3 serve` in the foreground. Developers who want T3 to keep running after the terminal closes can opt in to [autostart](#autostart-keep-t3-running).
 
 T3 is exposed through the active DDEV project hostname:
 
@@ -33,11 +33,40 @@ T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions t
 | ------- | ----------- |
 | `ddev t3 start` | Start `t3 serve` in the web container and stream logs |
 | `ddev t3 pair` | Print a pairing link for the running T3 that uses the project URL |
+| `ddev t3 status` | Show whether T3 is running, as a daemon or in the foreground |
+| `ddev t3 stop` | Stop the [autostart](#autostart-keep-t3-running) daemon |
+| `ddev t3 restart` | Restart the [autostart](#autostart-keep-t3-running) daemon |
 | `ddev t3 help` | Show command help |
 
 `ddev t3 start` prints the HTTP and HTTPS URLs before starting T3. Press `Ctrl-C` to stop T3.
 
 Those URLs only work on the machine running DDEV. To reach T3 from another machine, see [Remote access](#remote-access-tailscale-lan).
+
+## Autostart (keep T3 running)
+
+By default T3 runs only while `ddev t3 start` runs in a terminal: closing it stops T3 and every running agent. With autostart, DDEV runs T3 as a web container daemon instead. It starts with `ddev start` and `ddev restart`, stops with `ddev stop`, keeps running when the terminal closes, and supervisord restarts it if it crashes.
+
+Autostart is off by default and is a per-developer choice. Turn it on with:
+
+```bash
+ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-autostart=true
+ddev add-on get e0ipso/ddev-assistant-t3
+ddev restart
+```
+
+On a first install, `ASSISTANT_T3_AUTOSTART=true ddev add-on get e0ipso/ddev-assistant-t3` does the same. To turn it off, set `--assistant-t3-autostart=false` and run the same two commands. DDEV builds daemons into the web image, so the change takes effect only after `ddev restart`.
+
+The add-on renders the daemon in `.ddev/config.assistant-t3.local.yaml`. DDEV's own `.ddev/.gitignore` ignores `config.*.local.yaml`, so the daemon never reaches git, even when the team commits the add-on. The setting itself lives in `.ddev/.env.assistant-t3`, so use a [personal install](#personal-install-not-committed) to keep it out of git too. Installation warns when `ASSISTANT_T3_AUTOSTART=true` is in a `.env.assistant-t3` that git tracks, because every teammate who installs the add-on from the repository would get the daemon.
+
+The daemon runs the same code as `ddev t3 start`: same `t3 serve` flags, state volume, settings and URLs, and it adds the project to T3 the same way. With autostart on:
+
+- `ddev t3 start` doesn't start a second server. It prints the URLs and starts the daemon again only if you stopped it. It rejects extra `t3 serve` arguments, because the daemon takes none.
+- `ddev t3 stop` stops the daemon until the next `ddev t3 start`, `ddev start` or `ddev restart`. `ddev t3 restart` restarts it, for example after you change `.ddev/t3/settings.json`.
+- `ddev t3 status` shows the daemon's state. `FATAL` means T3 exited too often for supervisord to restart it, and the logs say why.
+- T3's output goes to `ddev logs -s web -f`, mixed with the web server's.
+- Pair with `ddev t3 pair` as usual. `t3 serve` prints a live pairing token, pairing URL and QR code each time it starts, so the daemon leaves those lines out of `ddev logs`.
+
+With `webserver_type: generic`, DDEV's `ddev xhprof` and `ddev blackfire` restart every web container daemon, T3 included, which ends running agent sessions.
 
 ## Connecting the desktop app
 
@@ -242,7 +271,7 @@ ddev add-on remove assistant-t3
 ddev restart
 ```
 
-Removal deletes the generated DDEV files but keeps `.ddev/.env.assistant-t3` and `.ddev/t3/settings.json`, so a later reinstall picks your settings up again. Delete them by hand if you don't need them.
+Removal deletes the generated DDEV files, including the autostart daemon in `.ddev/config.assistant-t3.local.yaml`, but keeps `.ddev/.env.assistant-t3` and `.ddev/t3/settings.json`, so a later reinstall picks your settings up again. Delete them by hand if you don't need them.
 
 Removal also keeps the `ddev-<project>-assistant` volume, because it holds your T3 pairings and data. `ddev delete` removes it with the project. To remove it without deleting the project, stop the project and remove the volume:
 

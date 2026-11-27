@@ -57,6 +57,8 @@ health_checks() {
   assert_file_exists ".ddev/web-build/Dockerfile.assistant-t3"
   assert_file_exists ".ddev/.env.assistant-t3"
   assert_file_exists ".ddev/t3/settings.json"
+  # Autostart is opt-in, so a default install renders no daemon.
+  assert_file_not_exists ".ddev/config.assistant-t3.local.yaml"
 
   # The compose file always mounts the T3 state volume, and only publishes
   # ports when a direct bind address is set.
@@ -107,6 +109,14 @@ health_checks() {
   assert_success
   assert_output --partial "ddev t3 start"
   assert_output --partial "ddev t3 pair"
+  assert_output --partial "ddev t3 status"
+
+  run ddev t3 status
+  assert_success
+  assert_output --partial "T3 is not running"
+  run ddev t3 stop
+  assert_failure
+  assert_output --partial "not managed as a daemon"
 
   run timeout 20s ddev t3 start
   assert_failure 124
@@ -731,6 +741,146 @@ git_exclude_file() {
   assert_success
   run grep -F "ddev-assistant-t3" "$(git_exclude_file)"
   assert_failure
+}
+
+# Waits until T3 answers through ddev-router on the HTTPS port.
+wait_for_t3() {
+  local https_port="${1}"
+  local status=""
+
+  for _ in $(seq 1 60); do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "https://${PROJNAME}.ddev.site:${https_port}/.well-known/t3/environment" || true)"
+    [ "${status}" = "200" ] && return 0
+    sleep 2
+  done
+  fail "T3 did not answer on https://${PROJNAME}.ddev.site:${https_port}: $(ddev logs -s web 2>&1 | tail -n 40)"
+}
+
+@test "autostart runs T3 as a daemon" {
+  set -eu -o pipefail
+  local https_port
+
+  ASSISTANT_T3_AUTOSTART=true run ddev add-on get "${DIR}"
+  assert_success
+  run grep -x "ASSISTANT_T3_AUTOSTART=true" .ddev/.env.assistant-t3
+  assert_success
+  assert_file_exists ".ddev/config.assistant-t3.local.yaml"
+  run grep -F "command: /mnt/ddev_config/commands/web/t3 daemon" .ddev/config.assistant-t3.local.yaml
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  read -r _ https_port _ < <(expected_ports_for_project "${PROJNAME}")
+  wait_for_t3 "${https_port}"
+
+  run ddev exec supervisorctl status webextradaemons:assistant-t3
+  assert_output --partial "RUNNING"
+  run ddev t3 status
+  assert_success
+  assert_output --partial "T3 daemon (ASSISTANT_T3_AUTOSTART=true): RUNNING"
+  assert_output --partial "https://${PROJNAME}.ddev.site:${https_port}"
+
+  # The daemon starts T3 the way "ddev t3 start" does, project seeding included.
+  run active_app_root_projects
+  assert_success
+  assert_output "${PROJNAME}"
+
+  # "t3 serve" prints a live pairing token on start. It must not reach
+  # "ddev logs", which DDEV fills with the daemon's output.
+  run ddev logs -s web
+  assert_output --partial "T3 Code server is ready."
+  assert_output --partial 'run "ddev t3 pair" to pair a device'
+  refute_output --partial "Token: "
+  refute_output --partial "#token="
+  refute_output --partial "Pairing URL: "
+  refute_output --partial "█"
+
+  run ddev t3 pair
+  assert_success
+  assert_output --partial "Pairing URL: https://${PROJNAME}.ddev.site:${https_port}/pair#token="
+
+  # "ddev t3 start" points to the daemon instead of a second server.
+  run timeout 20s ddev t3 start
+  assert_success
+  assert_output --partial "T3 is already running as a daemon"
+  assert_output --partial "ddev logs -s web -f"
+  refute_output --partial "Starting T3 in the web container"
+  run timeout 20s ddev t3 start -- --log-level debug
+  assert_failure
+  assert_output --partial "takes no extra"
+
+  run ddev t3 stop
+  assert_success
+  run ddev exec supervisorctl status webextradaemons:assistant-t3
+  assert_output --partial "STOPPED"
+  run ddev t3 status
+  assert_output --partial "STOPPED"
+
+  run timeout 60s ddev t3 start
+  assert_success
+  assert_output --partial "Started the T3 daemon"
+  wait_for_t3 "${https_port}"
+
+  run timeout 60s ddev t3 restart
+  assert_success
+  assert_output --partial "Restarted the T3 daemon"
+  wait_for_t3 "${https_port}"
+
+  # Turning autostart off again drops the daemon after a restart.
+  run ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-autostart=false
+  assert_success
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_file_not_exists ".ddev/config.assistant-t3.local.yaml"
+  run ddev restart -y
+  assert_success
+  run ddev exec supervisorctl status webextradaemons:assistant-t3
+  refute_output --partial "RUNNING"
+  run ddev t3 status
+  assert_output --partial "T3 is not running"
+}
+
+@test "autostart rejects a value other than true or false" {
+  set -eu -o pipefail
+  ASSISTANT_T3_AUTOSTART=yes run ddev add-on get "${DIR}"
+  assert_failure
+  assert_output --partial "ASSISTANT_T3_AUTOSTART must be true or false, got 'yes'"
+}
+
+@test "personal install with autostart keeps the daemon out of git" {
+  set -eu -o pipefail
+  git_init_project
+
+  ASSISTANT_T3_GIT_EXCLUDE=true ASSISTANT_T3_AUTOSTART=true run ddev add-on get "${DIR}"
+  assert_success
+  assert_file_exists ".ddev/config.assistant-t3.local.yaml"
+  run grep -x "/.ddev/config.assistant-t3.local.yaml" "$(git_exclude_file)"
+  assert_success
+  run git status --porcelain --untracked-files=all
+  assert_output ""
+  refute_output --partial "ASSISTANT_T3_AUTOSTART=true is set"
+
+  run ddev add-on remove assistant-t3
+  assert_success
+  assert_file_not_exists ".ddev/config.assistant-t3.local.yaml"
+}
+
+@test "autostart warns when its setting is committed" {
+  set -eu -o pipefail
+  git_init_project
+  run ddev add-on get "${DIR}"
+  assert_success
+  git add .ddev/.env.assistant-t3
+  git -c user.name=test -c user.email=test@example.com commit -qm "commit the add-on settings"
+
+  run ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-autostart=true
+  assert_success
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_output --partial "ASSISTANT_T3_AUTOSTART=true is set in .env.assistant-t3, which git tracks"
+  # The daemon file itself stays out of git through DDEV's own .gitignore.
+  run git status --porcelain --untracked-files=all
+  refute_output --partial "config.assistant-t3.local.yaml"
 }
 
 # bats test_tags=release

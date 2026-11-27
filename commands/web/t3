@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ## Description: Manage T3 Code in the DDEV web container
-## Usage: t3 start [-- <extra t3 serve args>] | t3 pair [--base-url <url>] [--ttl <duration>] [--label <label>]
-## Example: "ddev t3 start" or "ddev t3 pair"
+## Usage: t3 start [-- <extra t3 serve args>] | t3 pair [--base-url <url>] [--ttl <duration>] [--label <label>] | t3 status | t3 stop | t3 restart
+## Example: "ddev t3 start", "ddev t3 pair" or "ddev t3 status"
 
 #ddev-generated
 
@@ -16,13 +16,21 @@ usage() {
 Usage:
   ddev t3 start [-- <extra t3 serve args>]
   ddev t3 pair [--base-url <url>] [--ttl <duration>] [--label <label>]
+  ddev t3 status
+  ddev t3 stop
+  ddev t3 restart
   ddev t3 help
 
 Commands:
-  start   Run "t3 serve" in the web container foreground
-  pair    Print a pairing link for the running T3 that uses the project URL,
-          https://<project>.ddev.site:<https-port>, instead of the container IP
-  help    Show this help
+  start    Run "t3 serve" in the web container foreground. With
+           ASSISTANT_T3_AUTOSTART=true, T3 already runs as a DDEV daemon, so
+           start only starts that daemon again if it was stopped.
+  pair     Print a pairing link for the running T3 that uses the project URL,
+           https://<project>.ddev.site:<https-port>, instead of the container IP
+  status   Show whether T3 is running, and how
+  stop     Stop the T3 daemon until the next "ddev restart" or "ddev t3 start"
+  restart  Restart the T3 daemon
+  help     Show this help
 
 Pair options:
   --base-url <url>    Address to put in the link instead of the project URL, for
@@ -334,7 +342,7 @@ pair_t3() {
 
   if ! output="$(T3CODE_HOME="$(t3_runtime_home)" t3 "${pair_args[@]}" 2>&1)"; then
     printf '%s\n' "${output}" >&2
-    echo "assistant-t3: \"t3 pair\" failed. Is T3 running? Start it with \"ddev t3 start\" in another terminal." >&2
+    echo "assistant-t3: \"t3 pair\" failed. Is T3 running? Check with \"ddev t3 status\", and start it with \"ddev t3 start\" in another terminal." >&2
     exit 1
   fi
 
@@ -365,27 +373,32 @@ The app saves ${base_url} and reconnects to it after restarts.
 EOF
 }
 
-start_t3() {
-  local container_port http_port https_port hostname
-  local direct_publish direct_bind_address direct_port
-
+# Everything "t3 serve" needs before it runs, shared by the foreground "start"
+# and the "daemon" that ASSISTANT_T3_AUTOSTART runs, so both start T3 the same
+# way. Leaves the working directory at the app root and exports T3CODE_HOME.
+prepare_serve() {
   require_t3
 
   check_node_version
 
   resolve_ports
-  container_port="${ASSISTANT_T3_CONTAINER_PORT_RESOLVED}"
-  http_port="${ASSISTANT_T3_HTTP_PORT_RESOLVED}"
-  https_port="${ASSISTANT_T3_HTTPS_PORT_RESOLVED}"
 
   prepare_t3_home
+
+  export T3CODE_HOME="${T3CODE_RUNTIME_HOME}"
+  cd "${DDEV_APPROOT_DIR}"
+  seed_project
+}
+
+print_urls() {
+  local hostname direct_publish direct_bind_address direct_port
 
   hostname="$(project_hostname)"
 
   cat <<EOF
 T3 URLs:
-  http://${hostname}:${http_port}
-  https://${hostname}:${https_port}
+  http://${hostname}:${ASSISTANT_T3_HTTP_PORT_RESOLVED}
+  https://${hostname}:${ASSISTANT_T3_HTTPS_PORT_RESOLVED}
 EOF
 
   while read -r direct_publish; do
@@ -405,6 +418,95 @@ EOF
   done <<EOF
 $(read_direct_publishes)
 EOF
+}
+
+serve_args() {
+  SERVE_ARGS=(serve --mode web --host 0.0.0.0 --port "${ASSISTANT_T3_CONTAINER_PORT_RESOLVED}" --base-dir "${T3CODE_HOME}" --no-browser "$@")
+}
+
+# The supervisord program name DDEV gives the ASSISTANT_T3_AUTOSTART daemon.
+DAEMON_PROGRAM="webextradaemons:assistant-t3"
+
+# Prints the daemon's supervisord state (RUNNING, STOPPED, FATAL, ...), or
+# nothing when autostart is off and supervisord has no such program.
+daemon_state() {
+  local output
+
+  command -v supervisorctl >/dev/null 2>&1 || return 0
+  output="$(supervisorctl status "${DAEMON_PROGRAM}" 2>/dev/null || true)"
+  case "${output}" in
+    *"no such"*|*"ERROR"*|'') return 0 ;;
+  esac
+  printf '%s\n' "${output}" | awk 'NR == 1 { print $2 }'
+}
+
+daemon_is_up() {
+  case "$1" in
+    RUNNING|STARTING|BACKOFF) return 0 ;;
+  esac
+  return 1
+}
+
+# True when something answers on the T3 container port, for a foreground T3.
+port_answers() {
+  (exec 3<>"/dev/tcp/127.0.0.1/${ASSISTANT_T3_CONTAINER_PORT_RESOLVED}") 2>/dev/null
+}
+
+print_daemon_hints() {
+  cat <<'EOF'
+
+T3 runs as a DDEV daemon because ASSISTANT_T3_AUTOSTART=true. It keeps running
+after this terminal closes, and starts again with "ddev start".
+
+  Logs: ddev logs -s web -f
+  Pair the desktop app: ddev t3 pair
+  Stop or restart it: ddev t3 stop, ddev t3 restart
+EOF
+}
+
+# "t3 serve" prints a live pairing token, a pairing URL with that token and a
+# QR code of it on every start, unless T3's own service launcher started it
+# over IPC, which nothing else can request. DDEV sends daemon output to
+# "ddev logs", so drop those lines there. "Connection string" names the web
+# container's IP, which changes whenever DDEV recreates the container.
+redact_pairing() {
+  sed -u \
+    -e '/^Token: /d' \
+    -e '/^Pairing URL: /d' \
+    -e '/^App link: /d' \
+    -e '/^Connection string: /d' \
+    -e '/^[[:space:]]*[█▀▄][█▀▄[:space:]]*$/d' \
+    -e 's/^T3 Code server is ready\.$/&\nassistant-t3: pairing details are not logged here; run "ddev t3 pair" to pair a device./'
+}
+
+start_t3() {
+  local state
+
+  resolve_ports
+  state="$(daemon_state)"
+  if [ -n "${state}" ]; then
+    if [ "${1:-}" = "--" ] && [ "$#" -gt 1 ]; then
+      echo "assistant-t3: T3 runs as a daemon (ASSISTANT_T3_AUTOSTART=true), which takes no extra \"t3 serve\" arguments" >&2
+      exit 1
+    fi
+    if daemon_is_up "${state}"; then
+      echo "T3 is already running as a daemon (${state})."
+    else
+      supervisorctl start "${DAEMON_PROGRAM}" >/dev/null || true
+      state="$(daemon_state)"
+      if ! daemon_is_up "${state}"; then
+        echo "assistant-t3: the T3 daemon did not start (${state:-unknown}). See \"ddev logs -s web\"." >&2
+        exit 1
+      fi
+      echo "Started the T3 daemon."
+    fi
+    print_urls
+    print_daemon_hints
+    return 0
+  fi
+
+  prepare_serve
+  print_urls
 
   cat <<EOF
 
@@ -419,10 +521,66 @@ EOF
     shift
   fi
 
-  export T3CODE_HOME="${T3CODE_RUNTIME_HOME}"
-  cd "${DDEV_APPROOT_DIR}"
-  seed_project
-  exec t3 serve --mode web --host 0.0.0.0 --port "${container_port}" --base-dir "${T3CODE_HOME}" --no-browser "$@"
+  serve_args "$@"
+  exec t3 "${SERVE_ARGS[@]}"
+}
+
+# Run by supervisord through the web_extra_daemons entry that
+# ASSISTANT_T3_AUTOSTART=true renders in config.assistant-t3.local.yaml.
+daemon_t3() {
+  prepare_serve
+  print_urls
+  serve_args
+  exec t3 "${SERVE_ARGS[@]}" > >(redact_pairing) 2>&1
+}
+
+require_daemon() {
+  local state
+
+  state="$(daemon_state)"
+  if [ -z "${state}" ]; then
+    echo "assistant-t3: T3 is not managed as a daemon. Stop a \"ddev t3 start\" with Ctrl-C in its terminal, or set ASSISTANT_T3_AUTOSTART=true (see the README)." >&2
+    exit 1
+  fi
+}
+
+stop_t3() {
+  require_daemon
+  supervisorctl stop "${DAEMON_PROGRAM}" >/dev/null
+  echo "Stopped the T3 daemon. It starts again with \"ddev t3 start\" or \"ddev restart\"."
+}
+
+restart_t3() {
+  local state
+
+  require_daemon
+  supervisorctl restart "${DAEMON_PROGRAM}" >/dev/null || true
+  state="$(daemon_state)"
+  if ! daemon_is_up "${state}"; then
+    echo "assistant-t3: the T3 daemon did not start (${state:-unknown}). See \"ddev logs -s web\"." >&2
+    exit 1
+  fi
+  echo "Restarted the T3 daemon."
+}
+
+status_t3() {
+  local state
+
+  resolve_ports
+  state="$(daemon_state)"
+  if [ -n "${state}" ]; then
+    echo "T3 daemon (ASSISTANT_T3_AUTOSTART=true): ${state}"
+    if [ "${state}" = "FATAL" ]; then
+      echo "It exited too often to restart. See \"ddev logs -s web\", then run \"ddev t3 start\"."
+    fi
+    daemon_is_up "${state}" || return 0
+  elif port_answers; then
+    echo "T3 is running in the foreground of a \"ddev t3 start\"."
+  else
+    echo "T3 is not running. Start it with \"ddev t3 start\"."
+    return 0
+  fi
+  print_urls
 }
 
 subcommand="${1:-help}"
@@ -434,6 +592,18 @@ case "${subcommand}" in
   pair)
     shift
     pair_t3 "$@"
+    ;;
+  status)
+    status_t3
+    ;;
+  stop)
+    stop_t3
+    ;;
+  restart)
+    restart_t3
+    ;;
+  daemon)
+    daemon_t3
     ;;
   help|-h|--help)
     usage
