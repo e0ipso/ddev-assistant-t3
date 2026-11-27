@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ## Description: Manage T3 Code in the DDEV web container
-## Usage: t3 start [-- <extra t3 serve args>]
-## Example: "ddev t3 start"
+## Usage: t3 start [-- <extra t3 serve args>] | t3 pair [--base-url <url>] [--ttl <duration>] [--label <label>]
+## Example: "ddev t3 start" or "ddev t3 pair"
 
 #ddev-generated
 
@@ -15,11 +15,20 @@ usage() {
   cat <<'EOF'
 Usage:
   ddev t3 start [-- <extra t3 serve args>]
+  ddev t3 pair [--base-url <url>] [--ttl <duration>] [--label <label>]
   ddev t3 help
 
 Commands:
   start   Run "t3 serve" in the web container foreground
+  pair    Print a pairing link for the running T3 that uses the project URL,
+          https://<project>.ddev.site:<https-port>, instead of the container IP
   help    Show this help
+
+Pair options:
+  --base-url <url>    Address to put in the link instead of the project URL, for
+                      example http://<machine>.<tailnet>.ts.net:<direct-port>
+  --ttl <duration>    How long the token stays valid, for example 15m (T3's default: 5m)
+  --label <label>     Name shown in T3's connections list
 EOF
 }
 
@@ -106,12 +115,17 @@ ensure_state_dir_writable() {
   fi
 }
 
-prepare_t3_home() {
+t3_runtime_home() {
   local sitename="${DDEV_SITENAME:-${DDEV_PROJECT:-default}}"
+  printf '%s\n' "${ASSISTANT_T3_RUNTIME_DIR:-/mnt/ddev-global-cache/assistant-t3/${sitename}}"
+}
+
+prepare_t3_home() {
   # DDEV mounts /mnt/ddev_config read-only. T3 saves settings.json by writing a
   # temp file next to the symlink target, so link to the writable app root copy.
   local t3_config_dir="${DDEV_APPROOT_DIR}/.ddev/t3"
-  local t3_runtime_home="${ASSISTANT_T3_RUNTIME_DIR:-/mnt/ddev-global-cache/assistant-t3/${sitename}}"
+  local t3_runtime_home
+  t3_runtime_home="$(t3_runtime_home)"
   local t3_runtime_userdata="${t3_runtime_home}/userdata"
   local settings_file="${t3_config_dir}/settings.json"
   local settings_link="${t3_runtime_userdata}/settings.json"
@@ -190,7 +204,7 @@ if (range && !semver.satisfies(process.versions.node, range, { includePrerelease
 EOF
 }
 
-start_t3() {
+require_t3() {
   if ! command -v t3 >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 assistant-t3: T3 is not available in the web container.
@@ -200,15 +214,16 @@ If the rebuild already ran, inspect the web image build output for the T3 npm in
 EOF
     exit 1
   fi
+}
 
-  check_node_version
-
-  calculate_default_ports
-
+# Sets ASSISTANT_T3_CONTAINER_PORT_RESOLVED, ASSISTANT_T3_HTTP_PORT_RESOLVED and
+# ASSISTANT_T3_HTTPS_PORT_RESOLVED from the generated DDEV config, then the env
+# file, then the defaults calculated from the project name.
+resolve_ports() {
   local env_container_port env_http_port env_https_port
   local config_container_port config_http_port config_https_port
-  local container_port http_port https_port hostname
-  local direct_publish direct_bind_address direct_port
+
+  calculate_default_ports
 
   env_container_port="$(read_env_var ASSISTANT_T3_CONTAINER_PORT)"
   env_http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
@@ -218,26 +233,154 @@ EOF
   config_http_port="$(read_ddev_config_port http_port)"
   config_https_port="$(read_ddev_config_port https_port)"
 
-  container_port="${config_container_port:-${env_container_port:-3773}}"
-  http_port="${config_http_port:-${env_http_port:-${ASSISTANT_T3_DEFAULT_HTTP_PORT}}}"
-  https_port="${config_https_port:-${env_https_port:-${ASSISTANT_T3_DEFAULT_HTTPS_PORT}}}"
+  ASSISTANT_T3_CONTAINER_PORT_RESOLVED="${config_container_port:-${env_container_port:-3773}}"
+  ASSISTANT_T3_HTTP_PORT_RESOLVED="${config_http_port:-${env_http_port:-${ASSISTANT_T3_DEFAULT_HTTP_PORT}}}"
+  ASSISTANT_T3_HTTPS_PORT_RESOLVED="${config_https_port:-${env_https_port:-${ASSISTANT_T3_DEFAULT_HTTPS_PORT}}}"
 
-  validate_port "ASSISTANT_T3_CONTAINER_PORT" "${container_port}"
-  validate_port "ASSISTANT_T3_HTTP_PORT" "${http_port}"
-  validate_port "ASSISTANT_T3_HTTPS_PORT" "${https_port}"
+  validate_port "ASSISTANT_T3_CONTAINER_PORT" "${ASSISTANT_T3_CONTAINER_PORT_RESOLVED}"
+  validate_port "ASSISTANT_T3_HTTP_PORT" "${ASSISTANT_T3_HTTP_PORT_RESOLVED}"
+  validate_port "ASSISTANT_T3_HTTPS_PORT" "${ASSISTANT_T3_HTTPS_PORT_RESOLVED}"
 
-  if [ "${http_port}" = "${https_port}" ]; then
+  if [ "${ASSISTANT_T3_HTTP_PORT_RESOLVED}" = "${ASSISTANT_T3_HTTPS_PORT_RESOLVED}" ]; then
     echo "assistant-t3: ASSISTANT_T3_HTTP_PORT and ASSISTANT_T3_HTTPS_PORT must differ" >&2
     exit 1
   fi
+}
 
-  prepare_t3_home
+project_hostname() {
+  local hostname="${DDEV_SITENAME:-${DDEV_PROJECT:-}}.ddev.site"
 
-  hostname="${DDEV_SITENAME:-${DDEV_PROJECT:-}}.ddev.site"
   if [ "${hostname}" = ".ddev.site" ]; then
     echo "assistant-t3: DDEV_SITENAME is not available; cannot print project URLs" >&2
     exit 1
   fi
+  printf '%s\n' "${hostname}"
+}
+
+# Percent-encodes like the URLSearchParams T3 uses for its app links: only
+# ASCII letters, digits and "*-._" stay as they are.
+form_url_encode() {
+  local value="$1" encoded="" char i
+  local LC_ALL=C
+
+  for (( i = 0; i < ${#value}; i++ )); do
+    char="${value:i:1}"
+    case "${char}" in
+      [A-Za-z0-9*._-]) encoded+="${char}" ;;
+      ' ') encoded+='+' ;;
+      *) encoded+="$(printf '%%%02X' "'${char}")" ;;
+    esac
+  done
+  printf '%s\n' "${encoded}"
+}
+
+validate_base_url() {
+  local base_url="$1"
+
+  if ! printf '%s' "${base_url}" | grep -Eq '^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$'; then
+    echo "assistant-t3: --base-url must look like http(s)://host[:port] with no path, got '${base_url}'" >&2
+    exit 1
+  fi
+}
+
+# T3 builds its pairing link from the first IPv4 address of the web container,
+# a Docker network address that changes whenever DDEV recreates the container,
+# and it has no option to name another host. The desktop app saves whatever
+# address it paired through, so mint the token with "t3 pair" and put it on an
+# address that stays the same: the project URL through ddev-router by default.
+pair_t3() {
+  local base_url="" ttl="" label="ddev t3 pair"
+  local output token expires pairing_url
+  local -a pair_args
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --base-url|--ttl|--label)
+        if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+          echo "assistant-t3: $1 needs a value" >&2
+          exit 1
+        fi
+        case "$1" in
+          --base-url) base_url="$2" ;;
+          --ttl) ttl="$2" ;;
+          --label) label="$2" ;;
+        esac
+        shift 2
+        ;;
+      --base-url=*) base_url="${1#*=}"; shift ;;
+      --ttl=*) ttl="${1#*=}"; shift ;;
+      --label=*) label="${1#*=}"; shift ;;
+      *)
+        echo "assistant-t3: unknown pair option '$1'" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [ -z "${base_url}" ]; then
+    resolve_ports
+    base_url="https://$(project_hostname):${ASSISTANT_T3_HTTPS_PORT_RESOLVED}"
+  fi
+  base_url="${base_url%/}"
+  validate_base_url "${base_url}"
+
+  require_t3
+
+  pair_args=(pair --base-dir "$(t3_runtime_home)" --label "${label}")
+  if [ -n "${ttl}" ]; then
+    pair_args+=(--ttl "${ttl}")
+  fi
+
+  if ! output="$(T3CODE_HOME="$(t3_runtime_home)" t3 "${pair_args[@]}" 2>&1)"; then
+    printf '%s\n' "${output}" >&2
+    echo "assistant-t3: \"t3 pair\" failed. Is T3 running? Start it with \"ddev t3 start\" in another terminal." >&2
+    exit 1
+  fi
+
+  token="$(printf '%s\n' "${output}" | sed -n 's/^Token: //p' | head -n 1)"
+  expires="$(printf '%s\n' "${output}" | sed -n 's/^Expires: //p' | head -n 1)"
+  if [ -z "${token}" ]; then
+    printf '%s\n' "${output}" >&2
+    echo "assistant-t3: could not find the token in the \"t3 pair\" output above" >&2
+    exit 1
+  fi
+
+  pairing_url="${base_url}/pair#token=${token}"
+
+  cat <<EOF
+Pair the T3 desktop app with this project. Open the app link, or add the
+pairing URL as a remote environment:
+
+  Pairing URL: ${pairing_url}
+  App link: t3code://pair?pairingUrl=$(form_url_encode "${pairing_url}")
+  Token: ${token}
+EOF
+  if [ -n "${expires}" ]; then
+    echo "  Expires: ${expires}"
+  fi
+  cat <<EOF
+
+The app saves ${base_url} and reconnects to it after restarts.
+EOF
+}
+
+start_t3() {
+  local container_port http_port https_port hostname
+  local direct_publish direct_bind_address direct_port
+
+  require_t3
+
+  check_node_version
+
+  resolve_ports
+  container_port="${ASSISTANT_T3_CONTAINER_PORT_RESOLVED}"
+  http_port="${ASSISTANT_T3_HTTP_PORT_RESOLVED}"
+  https_port="${ASSISTANT_T3_HTTPS_PORT_RESOLVED}"
+
+  prepare_t3_home
+
+  hostname="$(project_hostname)"
 
   cat <<EOF
 T3 URLs:
@@ -265,6 +408,10 @@ EOF
 
   cat <<EOF
 
+To pair the desktop app, run "ddev t3 pair" in another terminal once T3 is
+ready. Don't use T3's own "Connection string" and "Pairing URL" below: they name
+the web container's IP, which changes whenever DDEV recreates the container.
+
 Starting T3 in the web container. Press Ctrl-C to stop it.
 EOF
 
@@ -283,6 +430,10 @@ case "${subcommand}" in
   start)
     shift
     start_t3 "$@"
+    ;;
+  pair)
+    shift
+    pair_t3 "$@"
     ;;
   help|-h|--help)
     usage

@@ -25,7 +25,8 @@ setup() {
   bats_load_library bats-support
 
   export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
-  export PROJNAME="test-$(basename "${GITHUB_REPO}")"
+  # Override to run alongside another checkout's tests on the same machine.
+  export PROJNAME="${ASSISTANT_T3_TEST_PROJECT:-test-$(basename "${GITHUB_REPO}")}"
   export STATE_VOLUME="ddev-${PROJNAME}-assistant"
   mkdir -p "${HOME}/tmp"
   export TESTDIR="$(mktemp -d "${HOME}/tmp/${PROJNAME}.XXXXXX")"
@@ -105,13 +106,18 @@ health_checks() {
   run ddev t3 help
   assert_success
   assert_output --partial "ddev t3 start"
+  assert_output --partial "ddev t3 pair"
 
   run timeout 20s ddev t3 start
   assert_failure 124
   assert_output --partial "http://${PROJNAME}.ddev.site:${expected_http_port}"
   assert_output --partial "https://${PROJNAME}.ddev.site:${expected_https_port}"
   assert_output --partial "Starting T3 in the web container"
+  assert_output --partial 'run "ddev t3 pair"'
   refute_output --partial "EROFS"
+  if [ -n "${expected_direct_bind_addresses}" ]; then
+    assert_output --partial ":${expected_direct_port} (direct"
+  fi
 
   # T3 rewrites settings that hold legacy keys or default values on start, which
   # would dirty this committed file in every project.
@@ -119,7 +125,6 @@ health_checks() {
   assert_output "${settings_before}"
 
   if [ -n "${expected_direct_bind_addresses}" ]; then
-    assert_output --partial ":${expected_direct_port} (direct"
     assert_direct_port_answers "${expected_direct_port}"
   fi
 
@@ -206,6 +211,37 @@ start_t3_briefly() {
   ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
 }
 
+# Starts T3 in the background and waits until it answers through ddev-router.
+start_t3_in_background() {
+  local https_port="${1}"
+  local status=""
+
+  ddev t3 start > "${TESTDIR}/t3-background.log" 2>&1 &
+  T3_BACKGROUND_PID=$!
+
+  for _ in $(seq 1 45); do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "https://${PROJNAME}.ddev.site:${https_port}/.well-known/t3/environment" || true)"
+    [ "${status}" = "200" ] && return 0
+    sleep 2
+  done
+
+  stop_t3_in_background
+  fail "T3 did not answer on https://${PROJNAME}.ddev.site:${https_port}: $(cat "${TESTDIR}/t3-background.log")"
+}
+
+stop_t3_in_background() {
+  kill "${T3_BACKGROUND_PID}" 2>/dev/null || true
+  wait "${T3_BACKGROUND_PID}" 2>/dev/null || true
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+}
+
+environment_id() {
+  local https_port="${1}"
+
+  curl -sS --max-time 5 "https://${PROJNAME}.ddev.site:${https_port}/.well-known/t3/environment" \
+    | sed -n 's/.*"environmentId":"\([^"]*\)".*/\1/p'
+}
+
 expected_ports_for_project() {
   local project_name="${1}"
   local hash offset http_port https_port
@@ -257,6 +293,88 @@ EOF
   assert_failure
   assert_output --partial "needs Node.js >=99, but the web container has v"
   refute_output --partial "Starting T3"
+}
+
+# T3 prints pairing links with the web container's IP, which changes when DDEV
+# recreates the container. "ddev t3 pair" must put the token on the project URL
+# through ddev-router instead, and that URL must reach the same T3 environment,
+# WebSocket included, after a restart. Direct publishing is off, so nothing
+# here can pass through the direct port.
+@test "pair uses the project URL" {
+  set -eu -o pipefail
+  local https_port=21001 pairing_base first_environment_id
+
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_VERSION=latest
+ASSISTANT_T3_HTTP_PORT=21000
+ASSISTANT_T3_HTTPS_PORT=21001
+ASSISTANT_T3_DIRECT_BIND_ADDRESS=
+EOF
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  pairing_base="https://${PROJNAME}.ddev.site:${https_port}"
+
+  # Bad options fail before T3 is involved.
+  run ddev t3 pair --base-url "http://example.test/path"
+  assert_failure
+  assert_output --partial "--base-url must look like"
+  run ddev t3 pair --unknown
+  assert_failure
+  assert_output --partial "unknown pair option '--unknown'"
+
+  # Without a running server, "t3 pair" fails and the command says why.
+  run ddev t3 pair
+  assert_failure
+  assert_output --partial "Is T3 running?"
+
+  start_t3_in_background "${https_port}"
+
+  run ddev t3 pair --ttl 10m --label bats
+  assert_success
+  assert_output --partial "Pairing URL: ${pairing_base}/pair#token="
+  assert_output --partial "App link: t3code://pair?pairingUrl=https%3A%2F%2F${PROJNAME}.ddev.site%3A${https_port}%2Fpair%23token%3D"
+  assert_output --regexp "Token: [A-Z0-9]+"
+  assert_output --partial "Expires: "
+  assert_output --partial "The app saves ${pairing_base} and"
+  refute_output --regexp "https?://(172|10|192\.168)\."
+
+  run ddev t3 pair --base-url "http://laptop.example.ts.net:12345/"
+  assert_success
+  assert_output --partial "Pairing URL: http://laptop.example.ts.net:12345/pair#token="
+  assert_output --partial "pairingUrl=http%3A%2F%2Flaptop.example.ts.net%3A12345%2Fpair%23token%3D"
+
+  # The pairing page and the WebSocket endpoint answer through ddev-router.
+  # Without a credential T3 itself refuses the upgrade with 401, so a 401 from
+  # T3's auth, not a 502 or 404 from the router, shows the upgrade got through.
+  run curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "${pairing_base}/pair"
+  assert_success
+  assert_output "200"
+  run curl -sS -i --max-time 5 --http1.1 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    "${pairing_base}/ws?orchestrationProtocol=2"
+  assert_output --partial "401 Unauthorized"
+  assert_output --partial "auth_invalid"
+
+  first_environment_id="$(environment_id "${https_port}")"
+  [ -n "${first_environment_id}" ] || fail "no environmentId from ${pairing_base}"
+  stop_t3_in_background
+
+  # A saved connection is the URL plus the environment it paired with; both
+  # have to survive the web container being recreated.
+  run ddev restart -y
+  assert_success
+  start_t3_in_background "${https_port}"
+  run environment_id "${https_port}"
+  assert_success
+  assert_output "${first_environment_id}"
+  run ddev t3 pair
+  assert_success
+  assert_output --partial "Pairing URL: ${pairing_base}/pair#token="
+  stop_t3_in_background
 }
 
 # An empty ASSISTANT_T3_DIRECT_BIND_ADDRESS turns direct publishing off, leaving

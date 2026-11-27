@@ -32,11 +32,36 @@ T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions t
 | Command | Description |
 | ------- | ----------- |
 | `ddev t3 start` | Start `t3 serve` in the web container and stream logs |
+| `ddev t3 pair` | Print a pairing link for the running T3 that uses the project URL |
 | `ddev t3 help` | Show command help |
 
 `ddev t3 start` prints the HTTP and HTTPS URLs before starting T3. Press `Ctrl-C` to stop T3.
 
 Those URLs only work on the machine running DDEV. To reach T3 from another machine, see [Remote access](#remote-access-tailscale-lan).
+
+## Connecting the desktop app
+
+With T3 running, run this in another terminal:
+
+```bash
+ddev t3 pair
+```
+
+It prints a pairing URL and a `t3code://` app link on the project's HTTPS URL, for example `https://<project>.ddev.site:<https-port>/pair#token=...`. Open the app link, or add the pairing URL as a remote environment in the T3 desktop app. The token expires after 5 minutes unless you pass `--ttl`, for example `--ttl 15m`, and `--label` names the device in T3's connections list.
+
+Don't pair with the "Connection string" or "Pairing URL" that `ddev t3 start` shows. T3 builds those from the web container's IP address, which changes when DDEV recreates the container, and the desktop app keeps the address it paired through. A connection paired through the project URL survives `ddev restart`, `ddev poweroff` and reboots:
+
+- The ports are fixed in `.ddev/config.assistant-t3.yaml`, and `ddev-router` finds the container by its service name, not its IP.
+- T3's pairings and sessions live in the project's state volume. A session lasts 30 days and renews while the app is connected.
+- The desktop app reconnects by itself once T3 is running again.
+
+`*.ddev.site` resolves to `127.0.0.1` through public DNS, so without a network connection the name stops resolving once the cached answer expires. To work offline, add the project to `/etc/hosts` on your machine:
+
+```text
+127.0.0.1 <project>.ddev.site
+```
+
+The HTTPS URL uses DDEV's mkcert certificate. `mkcert -install`, part of DDEV's installation, adds its CA to the system and browser trust stores that the desktop app uses.
 
 This add-on does not install or validate assistant provider CLIs such as Claude, Codex, Gemini, Grok, OpenCode, or Cursor Agent. Install those separately in the `web` container when needed.
 
@@ -91,7 +116,15 @@ ddev restart
 ```
 
 Local browsers keep using `http://127.0.0.1:<direct-port>` and tailnet peers use
-`http://100.91.141.70:<direct-port>`, with nothing exposed to any other network. Setting
+`http://100.91.141.70:<direct-port>`, with nothing exposed to any other network.
+
+To pair another device over the tailnet, put the machine's MagicDNS name and the direct
+port in the link. MagicDNS names stay the same, and they resolve to the Tailscale IP that
+T3 is published on:
+
+```bash
+ddev t3 pair --base-url http://<machine>.<tailnet>.ts.net:<direct-port>
+``` Setting
 the value to `0.0.0.0` publishes on every interface instead, and setting it to nothing at
 all leaves only the `ddev-router` ports.
 
