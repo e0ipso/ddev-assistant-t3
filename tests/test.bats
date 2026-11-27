@@ -428,6 +428,120 @@ EOF
   assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
 }
 
+# Stands in for a client project repository that already tracks its .ddev
+# directory, so the tests can check what the add-on adds to "git status".
+git_init_project() {
+  git init -q .
+  git add -A
+  git -c user.name=test -c user.email=test@example.com commit -qm "client project"
+}
+
+git_exclude_file() {
+  git rev-parse --git-path info/exclude
+}
+
+# A personal install must leave the client repository untouched: no new files
+# in "git status", nothing picked up by "git add .ddev".
+@test "personal install keeps the add-on out of git" {
+  set -eu -o pipefail
+  git_init_project
+
+  ASSISTANT_T3_GIT_EXCLUDE=true run ddev add-on get "${DIR}"
+  assert_success
+  assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
+  run grep -x "ASSISTANT_T3_GIT_EXCLUDE=true" .ddev/.env.assistant-t3
+  assert_success
+
+  run git status --porcelain --untracked-files=all
+  assert_success
+  assert_output ""
+  run git add --dry-run .ddev
+  assert_success
+  assert_output ""
+
+  # A reinstall keeps the saved setting and doesn't repeat the exclude block.
+  run ddev add-on get "${DIR}"
+  assert_success
+  run grep -c "^# BEGIN ddev-assistant-t3 personal install$" "$(git_exclude_file)"
+  assert_output "1"
+  run git status --porcelain --untracked-files=all
+  assert_output ""
+}
+
+@test "install without personal mode leaves git alone" {
+  set -eu -o pipefail
+  git_init_project
+
+  run ddev add-on get "${DIR}"
+  assert_success
+  run grep -x "ASSISTANT_T3_GIT_EXCLUDE=false" .ddev/.env.assistant-t3
+  assert_success
+  run grep -F "ddev-assistant-t3" "$(git_exclude_file)"
+  assert_failure
+  run git status --porcelain --untracked-files=all
+  assert_output --partial ".ddev/config.assistant-t3.yaml"
+}
+
+@test "turning personal mode off removes the exclude block" {
+  set -eu -o pipefail
+  git_init_project
+
+  ASSISTANT_T3_GIT_EXCLUDE=true run ddev add-on get "${DIR}"
+  assert_success
+  # DDEV loads .env.assistant-t3 into the install environment, so the saved
+  # setting wins over the host environment and is changed with "ddev dotenv".
+  run ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-git-exclude=false
+  assert_success
+  run ddev add-on get "${DIR}"
+  assert_success
+  run grep -F "ddev-assistant-t3" "$(git_exclude_file)"
+  assert_failure
+  run git status --porcelain --untracked-files=all
+  assert_output --partial ".ddev/docker-compose.assistant-t3.yaml"
+}
+
+@test "personal install warns about add-on files already committed" {
+  set -eu -o pipefail
+  git_init_project
+  run ddev add-on get "${DIR}"
+  assert_success
+  git add .ddev/config.assistant-t3.yaml
+  git -c user.name=test -c user.email=test@example.com commit -qm "commit the add-on"
+
+  run ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-git-exclude=true
+  assert_success
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_output --partial "git already tracks these add-on files"
+  assert_output --partial "config.assistant-t3.yaml"
+}
+
+# Removal keeps .env.assistant-t3 and t3/settings.json, so those stay excluded.
+@test "removal of a personal install keeps excluding the leftover settings" {
+  set -eu -o pipefail
+  git_init_project
+
+  ASSISTANT_T3_GIT_EXCLUDE=true run ddev add-on get "${DIR}"
+  assert_success
+  run ddev add-on remove assistant-t3
+  assert_success
+
+  run git status --porcelain --untracked-files=all
+  assert_output ""
+  run sed -n '/^# BEGIN ddev-assistant-t3/,/^# END ddev-assistant-t3/p' "$(git_exclude_file)"
+  assert_output "$(printf '%s\n' '# BEGIN ddev-assistant-t3 personal install' '/.ddev/.env.assistant-t3' '/.ddev/t3/' '# END ddev-assistant-t3 personal install')"
+
+  # Once the settings are gone too, a reinstall in default mode and a removal
+  # leave no trace in the exclude file.
+  rm -rf .ddev/.env.assistant-t3 .ddev/t3
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev add-on remove assistant-t3
+  assert_success
+  run grep -F "ddev-assistant-t3" "$(git_exclude_file)"
+  assert_failure
+}
+
 # bats test_tags=release
 @test "install from release" {
   set -eu -o pipefail

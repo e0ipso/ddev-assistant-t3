@@ -94,6 +94,12 @@ post_install_actions:
     ensure_env_var "ASSISTANT_T3_DIRECT_BIND_ADDRESS" "127.0.0.1"
     ensure_env_var "ASSISTANT_T3_DIRECT_PORT" ""
 
+    # DDEV loads .ddev/.env.* into the environment of these actions, so a value
+    # in the host environment, as in
+    # "ASSISTANT_T3_GIT_EXCLUDE=true ddev add-on get ...", only counts on the
+    # first install. Change it later with "ddev dotenv set".
+    ensure_env_var "ASSISTANT_T3_GIT_EXCLUDE" "${ASSISTANT_T3_GIT_EXCLUDE:-false}"
+
     sitename="${DDEV_SITENAME:-}"
     if [ -z "${sitename}" ] && [ -f "config.yaml" ]; then
       sitename="$(awk -F: '/^name:/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' config.yaml)"
@@ -108,6 +114,15 @@ post_install_actions:
     calculated_http_port="$(( 20000 + offset ))"
     calculated_https_port="$(( calculated_http_port + 1 ))"
     calculated_direct_port="$(( 10000 + offset ))"
+
+    git_exclude="$(read_env_var ASSISTANT_T3_GIT_EXCLUDE)"
+    case "${git_exclude:-false}" in
+      true|false) ;;
+      *)
+        echo "assistant-t3: ASSISTANT_T3_GIT_EXCLUDE must be true or false, got '${git_exclude}'" >&2
+        exit 1
+        ;;
+    esac
 
     version="$(read_env_var ASSISTANT_T3_VERSION)"
     http_port="$(read_env_var ASSISTANT_T3_HTTP_PORT)"
@@ -248,6 +263,71 @@ post_install_actions:
     EOF
     fi
 
+    # Personal install: with ASSISTANT_T3_GIT_EXCLUDE=true, list every file this
+    # add-on creates in the clone's .git/info/exclude. Git then leaves them out of
+    # "git status" and "git add .ddev" for this developer only, and the project
+    # repository, and so every other developer's container, stays untouched.
+    # Linked worktrees share that exclude file with the main checkout.
+    update_git_exclude() {
+      if ! command -v git >/dev/null 2>&1 || [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
+        return 0
+      fi
+      prefix="$(git rev-parse --show-prefix)"
+      exclude_file="$(git rev-parse --git-path info/exclude)"
+      begin_marker="# BEGIN ddev-assistant-t3 personal install"
+      end_marker="# END ddev-assistant-t3 personal install"
+      if [ ! -f "${exclude_file}" ] && [ "$#" -eq 0 ]; then
+        return 0
+      fi
+      mkdir -p "$(dirname "${exclude_file}")"
+      tmp_file="$(mktemp)"
+      if [ -f "${exclude_file}" ]; then
+        awk -v begin="${begin_marker}" -v end="${end_marker}" '
+          $0 == begin { skip = 1; next }
+          $0 == end { skip = 0; next }
+          !skip
+        ' "${exclude_file}" > "${tmp_file}"
+      fi
+      if [ "$#" -gt 0 ]; then
+        {
+          echo "${begin_marker}"
+          for path in "$@"; do
+            echo "/${prefix}${path}"
+          done
+          echo "${end_marker}"
+        } >> "${tmp_file}"
+      fi
+      cat "${tmp_file}" > "${exclude_file}"
+      rm -f "${tmp_file}"
+    }
+
+    excluded_paths=".env.assistant-t3 addon-metadata/assistant-t3/ commands/web/t3 config.assistant-t3.yaml docker-compose.assistant-t3.yaml t3/ web-build/Dockerfile.assistant-t3"
+    if [ "${git_exclude:-false}" = "true" ]; then
+      # shellcheck disable=SC2086
+      update_git_exclude ${excluded_paths}
+    else
+      update_git_exclude
+    fi
+
+  - |
+    #ddev-description:Check that a personal install has no committed files
+    #ddev-warning-exit-code: 2
+    set -eu
+    # Excluding has no effect on files git already tracks, so a personal install
+    # in a project that commits the add-on would hide only newly added files.
+    # "ddev dotenv set" quotes values, so strip quotes like read_env_var does.
+    setting="$(awk -F= '$1 == "ASSISTANT_T3_GIT_EXCLUDE" { value = substr($0, index($0, "=") + 1); gsub(/^[[:space:]"'\'']+|[[:space:]"'\'']+$/, "", value); print value; exit }' .env.assistant-t3)"
+    [ "${setting}" = "true" ] || exit 0
+    command -v git >/dev/null 2>&1 || exit 0
+    [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ] || exit 0
+    tracked="$(git ls-files -- .env.assistant-t3 addon-metadata/assistant-t3/ commands/web/t3 config.assistant-t3.yaml docker-compose.assistant-t3.yaml t3/ web-build/Dockerfile.assistant-t3)"
+    if [ -n "${tracked}" ]; then
+      echo "assistant-t3: ASSISTANT_T3_GIT_EXCLUDE=true, but git already tracks these add-on files:" >&2
+      printf '  %s\n' ${tracked} >&2
+      echo "Set ASSISTANT_T3_GIT_EXCLUDE=false if your team commits this add-on." >&2
+      exit 2
+    fi
+
 # post_install_actions write these files, so DDEV doesn't track them as
 # project_files. Like DDEV does for project_files, skip any file whose
 # #ddev-generated marker was removed. .env.assistant-t3 and t3/settings.json
@@ -261,5 +341,40 @@ removal_actions:
         rm -f "${file}"
       fi
     done
+
+    # A personal install excluded the add-on's files from git. Keep excluding the
+    # user settings that removal leaves behind, so they don't turn up as new
+    # files, and drop the exclude block once nothing is left.
+    if command -v git >/dev/null 2>&1 && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]; then
+      prefix="$(git rev-parse --show-prefix)"
+      exclude_file="$(git rev-parse --git-path info/exclude)"
+      begin_marker="# BEGIN ddev-assistant-t3 personal install"
+      end_marker="# END ddev-assistant-t3 personal install"
+      if [ -f "${exclude_file}" ] && grep -qxF "${begin_marker}" "${exclude_file}"; then
+        tmp_file="$(mktemp)"
+        awk -v begin="${begin_marker}" -v end="${end_marker}" '
+          $0 == begin { skip = 1; next }
+          $0 == end { skip = 0; next }
+          !skip
+        ' "${exclude_file}" > "${tmp_file}"
+        leftovers=""
+        for path in .env.assistant-t3 t3/; do
+          if [ -e "${path%/}" ]; then
+            leftovers="${leftovers} ${path}"
+          fi
+        done
+        if [ -n "${leftovers}" ]; then
+          {
+            echo "${begin_marker}"
+            for path in ${leftovers}; do
+              echo "/${prefix}${path}"
+            done
+            echo "${end_marker}"
+          } >> "${tmp_file}"
+        fi
+        cat "${tmp_file}" > "${exclude_file}"
+        rm -f "${tmp_file}"
+      fi
+    fi
 
 ddev_version_constraint: '>= v1.24.10'
