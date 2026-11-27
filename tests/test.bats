@@ -377,6 +377,65 @@ EOF
   stop_t3_in_background
 }
 
+# T3 accepts the desktop app's DPoP proofs only when it rebuilds the request URL
+# with the scheme the app used. Through ddev-router that comes from
+# X-Forwarded-Proto, which Traefik sets to "wss" for WebSocket upgrades, a value
+# T3 doesn't read as TLS. The add-on's router override sends "https" instead.
+# A header-echo server on the T3 container port shows what reaches T3.
+@test "router forwards WebSocket upgrades on the HTTPS port as https" {
+  set -eu -o pipefail
+  local echo_pid
+
+  mkdir -p .ddev
+  cat > .ddev/.env.assistant-t3 <<'EOF'
+ASSISTANT_T3_HTTP_PORT=21000
+ASSISTANT_T3_HTTPS_PORT=21001
+EOF
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  # The override must not make DDEV warn about custom router configuration.
+  refute_output --partial "traefik/config/assistant-t3.yaml"
+  run grep -F "${PROJNAME}-assistant-t3-https" "${HOME}/.ddev/traefik/config/${PROJNAME}_merged.yaml"
+  assert_success
+
+  cat > header-echo.py <<'EOF'
+import http.server
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = "".join(f"{k}: {v}\n" for k, v in self.headers.items()).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+http.server.HTTPServer(("0.0.0.0", 3773), Handler).serve_forever()
+EOF
+  ddev exec python3 /var/www/html/header-echo.py > /dev/null 2>&1 &
+  echo_pid=$!
+  for _ in $(seq 1 15); do
+    curl -s -o /dev/null --max-time 2 "http://${PROJNAME}.ddev.site:21000/" && break
+    sleep 1
+  done
+
+  run curl -sS --max-time 5 --http1.1 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    "https://${PROJNAME}.ddev.site:21001/ws"
+  assert_output --partial "X-Forwarded-Proto: https"
+  run curl -sS --max-time 5 "https://${PROJNAME}.ddev.site:21001/"
+  assert_output --partial "X-Forwarded-Proto: https"
+  # The plain HTTP port keeps reporting http.
+  run curl -sS --max-time 5 "http://${PROJNAME}.ddev.site:21000/"
+  assert_output --partial "X-Forwarded-Proto: http"
+  refute_output --partial "X-Forwarded-Proto: https"
+
+  kill "${echo_pid}" 2>/dev/null || true
+  ddev exec pkill -f header-echo.py >/dev/null 2>&1 || true
+}
+
 # An empty ASSISTANT_T3_DIRECT_BIND_ADDRESS turns direct publishing off, leaving
 # only the ddev-router ports.
 @test "install with direct publishing disabled" {
@@ -515,10 +574,12 @@ EOF
   run ddev add-on get "${DIR}"
   assert_success
   assert_file_exists ".ddev/docker-compose.assistant-t3.yaml"
+  assert_file_exists ".ddev/traefik/config/assistant-t3.yaml"
 
   run ddev add-on remove assistant-t3
   assert_success
   assert_file_not_exists ".ddev/commands/web/t3"
+  assert_file_not_exists ".ddev/traefik/config/assistant-t3.yaml"
   assert_file_not_exists ".ddev/config.assistant-t3.yaml"
   assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
   assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
@@ -539,10 +600,22 @@ EOF
   assert_success
   sed -i.bak '/#ddev-generated/d' .ddev/config.assistant-t3.yaml
   rm -f .ddev/config.assistant-t3.yaml.bak
+  # DDEV deletes #ddev-generated files from traefik/config, so this one has
+  # its own marker.
+  sed -i.bak '/^# assistant-t3-generated$/d' .ddev/traefik/config/assistant-t3.yaml
+  rm -f .ddev/traefik/config/assistant-t3.yaml.bak
+  echo "# kept" >> .ddev/traefik/config/assistant-t3.yaml
+
+  # A reinstall leaves the taken-over file alone too.
+  run ddev add-on get "${DIR}"
+  assert_success
+  run tail -n 1 .ddev/traefik/config/assistant-t3.yaml
+  assert_output "# kept"
 
   run ddev add-on remove assistant-t3
   assert_success
   assert_file_exists ".ddev/config.assistant-t3.yaml"
+  assert_file_exists ".ddev/traefik/config/assistant-t3.yaml"
   assert_file_not_exists ".ddev/web-build/Dockerfile.assistant-t3"
 }
 

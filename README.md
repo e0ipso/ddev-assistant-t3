@@ -63,6 +63,8 @@ Don't pair with the "Connection string" or "Pairing URL" that `ddev t3 start` sh
 
 The HTTPS URL uses DDEV's mkcert certificate. `mkcert -install`, part of DDEV's installation, adds its CA to the system and browser trust stores that the desktop app uses.
 
+`ddev-router` terminates TLS and reports the original scheme to T3 in the `X-Forwarded-Proto` header. For WebSocket upgrades it sends `wss`, which T3 doesn't recognise as TLS, so T3 would check the desktop app's DPoP proof against an `http://` URL and refuse the WebSocket with "could not establish a WebSocket connection". The add-on writes `.ddev/traefik/config/assistant-t3.yaml`, which routes the HTTPS port through a middleware that always sends `https`. Delete its `# assistant-t3-generated` line to keep your own changes; reinstalling and removing the add-on then leave the file alone.
+
 This add-on does not install or validate assistant provider CLIs such as Claude, Codex, Gemini, Grok, OpenCode, or Cursor Agent. Install those separately in the `web` container when needed.
 
 ## Personal install (not committed)
@@ -183,6 +185,7 @@ Configuration lives in these files:
 | `.ddev/config.assistant-t3.yaml` | Generated DDEV web port exposure |
 | `.ddev/docker-compose.assistant-t3.yaml` | Generated T3 state volume mount, and direct host port publishing when remote access is enabled |
 | `.ddev/t3/settings.json` | T3 server settings, using T3's settings schema |
+| `.ddev/traefik/config/assistant-t3.yaml` | Generated `ddev-router` override that sends `X-Forwarded-Proto: https` for WebSocket upgrades on the HTTPS port |
 
 T3 keeps its runtime state outside the project `.ddev` directory, in the Docker volume `ddev-<project>-assistant`, which the `web` container mounts at `/mnt/ddev-global-cache/assistant-t3`. The state includes device pairings, the server identity, T3's database and the downloaded runtime, so it survives `ddev restart`, `ddev poweroff` and web image rebuilds. Each project has its own volume, so no other project's containers can read its T3 credentials. The add-on links T3's runtime `settings.json` back to `.ddev/t3/settings.json` so the user-editable server settings remain safe to commit.
 
