@@ -190,6 +190,22 @@ assert_direct_port_answers() {
   fi
 }
 
+# Prints the titles of the active T3 projects rooted at the app root, one per
+# line. Removed projects keep their row with deleted_at set.
+active_app_root_projects() {
+  local db="/mnt/ddev-global-cache/assistant-t3/${PROJNAME}/userdata/statev2.sqlite"
+
+  ddev exec sqlite3 "${db}" \
+    "SELECT title FROM projection_projects WHERE workspace_root = '/var/www/html' AND deleted_at IS NULL"
+}
+
+# Runs "ddev t3 start" until the timeout stops it, then stops the T3 server
+# left behind in the container.
+start_t3_briefly() {
+  run timeout "${1}" ddev t3 start
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+}
+
 expected_ports_for_project() {
   local project_name="${1}"
   local hash offset http_port https_port
@@ -315,6 +331,63 @@ EOF
   assert_failure
   assert_output --partial "ASSISTANT_T3_DIRECT_BIND_ADDRESS entries must be an IPv4 address"
   assert_file_not_exists ".ddev/docker-compose.assistant-t3.yaml"
+}
+
+# "ddev t3 start" adds the app root as a T3 project once per state volume,
+# retries when adding fails, and leaves a project the user removed alone.
+@test "start adds the DDEV project to T3 once" {
+  set -eu -o pipefail
+  local t3_home="/mnt/ddev-global-cache/assistant-t3/${PROJNAME}"
+  local marker="${t3_home}/.ddev-project-seeded"
+
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  # A failing "t3 project add" must not stop T3 from starting, and must not
+  # mark the volume as seeded. The stub sits in the app root, which the web
+  # container mounts at /var/www/html, and hands everything else to the real t3.
+  mkdir -p stub
+  cat > stub/t3 <<'EOF'
+#!/bin/bash
+if [ "$1" = project ]; then
+  echo boom
+  exit 1
+fi
+PATH="${PATH#*:}" exec t3 "$@"
+EOF
+  chmod +x stub/t3
+  run timeout 60s ddev exec bash -c 'PATH=/var/www/html/stub:$PATH /mnt/ddev_config/commands/web/t3 start'
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+  rm -rf stub
+  assert_output --partial "Starting T3 in the web container"
+  assert_output --partial "will retry on the next start"
+  assert_output --partial "boom"
+  run ddev exec test -e "${marker}"
+  assert_failure
+
+  start_t3_briefly 120s
+  assert_output --partial "added /var/www/html to T3 as project '${PROJNAME}'"
+  run active_app_root_projects
+  assert_success
+  assert_output "${PROJNAME}"
+  run ddev exec test -e "${marker}"
+  assert_success
+
+  start_t3_briefly 60s
+  refute_output --partial "added /var/www/html"
+  refute_output --partial "could not add"
+  run active_app_root_projects
+  assert_output "${PROJNAME}"
+
+  run ddev exec bash -c "T3CODE_HOME=${t3_home} t3 project remove /var/www/html --base-dir ${t3_home}"
+  assert_success
+  start_t3_briefly 60s
+  refute_output --partial "added /var/www/html"
+  run active_app_root_projects
+  assert_success
+  assert_output ""
 }
 
 # post_install_actions generate most files, so DDEV only removes them through
