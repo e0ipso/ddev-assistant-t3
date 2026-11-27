@@ -141,6 +141,43 @@ post_install_actions:
         https_port: ${https_port}
     EOF
 
+    # ddev-router terminates TLS and tells T3 the original scheme in
+    # X-Forwarded-Proto, but for WebSocket upgrades Traefik sends "wss", and T3
+    # only treats "https" as TLS. T3 then checks the desktop app's DPoP proof
+    # against an http:// URL, rejects it with url_mismatch, and the app cannot
+    # open its WebSocket. Route the HTTPS port through a middleware that always
+    # sends "https". DDEV deletes #ddev-generated files from traefik/config on
+    # every start, so this file carries its own marker instead.
+    traefik_config="traefik/config/assistant-t3.yaml"
+    traefik_marker="# assistant-t3-generated"
+    if [ ! -f "${traefik_config}" ] || grep -qxF "${traefik_marker}" "${traefik_config}"; then
+      host_regexp="^$(printf '%s' "${sitename}" | sed 's/\./\\./g')\\.ddev\\.site\$"
+      mkdir -p traefik/config
+      cat > "${traefik_config}" <<EOF
+    #ddev-silent-no-warn
+    ${traefik_marker}
+    # Sends X-Forwarded-Proto: https to T3 for WebSocket upgrades on the HTTPS
+    # port too, so T3 accepts the desktop app's DPoP proofs. Remove the marker
+    # line above to keep your own changes to this file.
+    http:
+      middlewares:
+        ${sitename}-assistant-t3-forwarded-https:
+          headers:
+            customRequestHeaders:
+              X-Forwarded-Proto: https
+      routers:
+        ${sitename}-assistant-t3-https:
+          entrypoints:
+            - http-${https_port}
+          rule: HostRegexp(\`${host_regexp}\`)
+          priority: 1000
+          service: "${sitename}-web-${container_port}"
+          middlewares:
+            - ${sitename}-assistant-t3-forwarded-https
+          tls: true
+    EOF
+    fi
+
     if [ -n "${direct_bind_addresses}" ]; then
       validate_port "ASSISTANT_T3_DIRECT_PORT" "${direct_port}"
 
@@ -302,5 +339,8 @@ removal_actions:
         rm -f "${file}"
       fi
     done
+    if [ -f traefik/config/assistant-t3.yaml ] && grep -qxF "# assistant-t3-generated" traefik/config/assistant-t3.yaml; then
+      rm -f traefik/config/assistant-t3.yaml
+    fi
 
 ddev_version_constraint: '>= v1.24.10'
