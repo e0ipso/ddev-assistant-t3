@@ -23,7 +23,7 @@ ddev add-on get e0ipso/ddev-assistant-t3
 ddev restart
 ```
 
-After installation, make sure to commit the `.ddev` directory to version control.
+After installation, make sure to commit the `.ddev` directory to version control, or use a [personal install](#personal-install-not-committed) to keep the add-on out of the project repository.
 
 T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions that the installed T3 doesn't support, according to the `engines` field of its npm package. The npm package `t3` is a launcher: the first `ddev t3 start` of each T3 version downloads T3's prebuilt runtime, several hundred MB, into the project's T3 state volume, so it needs network access.
 
@@ -39,6 +39,28 @@ T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions t
 Those URLs only work on the machine running DDEV. To reach T3 from another machine, see [Remote access](#remote-access-tailscale-lan).
 
 This add-on does not install or validate assistant provider CLIs such as Claude, Codex, Gemini, Grok, OpenCode, or Cursor Agent. Install those separately in the `web` container when needed.
+
+## Personal install (not committed)
+
+A committed add-on applies to every developer who runs `ddev start`: it adds the T3 image layer, router and host ports, and a Docker volume to their web container. When only some developers on a project use T3, install it for yourself and keep it out of git:
+
+```bash
+ASSISTANT_T3_GIT_EXCLUDE=true ddev add-on get e0ipso/ddev-assistant-t3
+ddev restart
+```
+
+The add-on then lists every file it creates in the clone's `.git/info/exclude`, between `# BEGIN ddev-assistant-t3 personal install` and `# END ddev-assistant-t3 personal install`. Git leaves them out of `git status` and `git add .ddev` for you only, so the project repository and other developers' containers don't change. Linked worktrees share the main checkout's exclude file.
+
+The setting is saved in `.ddev/.env.assistant-t3` and defaults to `false`. DDEV loads that file into the install environment, so after the first install the saved value wins over the shell; change it with `ddev dotenv set`:
+
+```bash
+ddev dotenv set .ddev/.env.assistant-t3 --assistant-t3-git-exclude=false
+ddev add-on get e0ipso/ddev-assistant-t3
+```
+
+Turning it off removes the block. Installation warns if add-on files are already committed, since excluding has no effect on files git tracks. `ddev add-on remove assistant-t3` keeps excluding the `.env.assistant-t3` and `t3/` settings it leaves behind. If the project is not a git checkout, the setting does nothing.
+
+Excluded files are ignored files, so `git clean -fdx` deletes them, including `.ddev/t3/settings.json`. Re-run the add-on to restore the rest; T3's pairings and other state live in the Docker volume and survive.
 
 ## Remote access (Tailscale, LAN)
 
@@ -124,7 +146,7 @@ Configuration lives in these files:
 
 | File | Purpose |
 | ---- | ------- |
-| `.ddev/.env.assistant-t3` | T3 version and port overrides |
+| `.ddev/.env.assistant-t3` | T3 version, port overrides and the personal install setting |
 | `.ddev/config.assistant-t3.yaml` | Generated DDEV web port exposure |
 | `.ddev/docker-compose.assistant-t3.yaml` | Generated T3 state volume mount, and direct host port publishing when remote access is enabled |
 | `.ddev/t3/settings.json` | T3 server settings, using T3's settings schema |
