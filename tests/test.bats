@@ -202,6 +202,69 @@ expected_ports_for_project() {
   printf '%s %s %s\n' "${http_port}" "${https_port}" "$(( 10000 + offset ))"
 }
 
+# Starts T3, then checks what the README's Security section says: T3 refuses
+# clients that haven't paired, "t3 pair" makes a token that pairs one client,
+# and a session issued with "t3 auth" shows up in the list until it is revoked.
+assert_pairing_commands() {
+  local container_port="${1}"
+  local base_dir='--base-dir "/mnt/ddev-global-cache/assistant-t3/${DDEV_SITENAME}"'
+  local api="http://127.0.0.1:${container_port}/api/auth"
+  local t3_pid pair_status=1 pair_output="" token session_id
+
+  ddev t3 start > "${TESTDIR}/t3-pair.log" 2>&1 &
+  t3_pid=$!
+
+  for _ in $(seq 1 30); do
+    pair_status=0
+    pair_output="$(ddev exec "t3 pair ${base_dir}" 2>&1)" || pair_status=$?
+    [ "${pair_status}" -eq 0 ] && break
+    sleep 2
+  done
+
+  if [ "${pair_status}" -ne 0 ]; then
+    kill "${t3_pid}" 2>/dev/null || true
+    wait "${t3_pid}" 2>/dev/null || true
+    ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+    fail "t3 pair failed: ${pair_output}
+T3 log: $(cat "${TESTDIR}/t3-pair.log")"
+  fi
+  assert_equal "$(grep -c '^Pairing URL: http.*/pair#token=' <<<"${pair_output}")" 1
+  token="$(sed -n 's/^Token: //p' <<<"${pair_output}")"
+  [ -n "${token}" ] || fail "no token in: ${pair_output}"
+
+  run ddev exec curl -s "${api}/session"
+  assert_success
+  assert_output --partial '"authenticated":false'
+  assert_output --partial '"policy":"remote-reachable"'
+
+  # The token pairs one client, and only once.
+  run ddev exec "curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d '{\"credential\":\"${token}\"}' '${api}/browser-session'"
+  assert_output "200"
+  run ddev exec "curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d '{\"credential\":\"${token}\"}' '${api}/browser-session'"
+  refute_output "200"
+
+  run ddev exec "t3 auth session issue --json ${base_dir}"
+  assert_success
+  session_id="$(sed -n 's/^ *"sessionId": "\([^"]*\)".*/\1/p' <<<"${output}")"
+  [ -n "${session_id}" ] || fail "no sessionId in: ${output}"
+
+  run ddev exec "t3 auth session list ${base_dir}"
+  assert_success
+  assert_output --partial "${session_id}"
+
+  run ddev exec "t3 auth session revoke ${session_id} ${base_dir}"
+  assert_success
+  assert_output --partial "Revoked session ${session_id}."
+
+  run ddev exec "t3 auth session list ${base_dir}"
+  assert_success
+  refute_output --partial "${session_id}"
+
+  kill "${t3_pid}" 2>/dev/null || true
+  wait "${t3_pid}" 2>/dev/null || true
+  ddev exec bash -c "pkill -f 't3 serve'" >/dev/null 2>&1 || true
+}
+
 teardown() {
   set -eu -o pipefail
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1
@@ -262,6 +325,8 @@ EOF
   run ddev restart -y
   assert_success
   health_checks 21000 21001 3774
+  # The README's Security section documents these commands.
+  assert_pairing_commands 3774
 }
 
 @test "install with remote access enabled" {

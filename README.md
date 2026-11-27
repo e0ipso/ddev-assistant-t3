@@ -112,11 +112,33 @@ no TLS for LAN clients.
 
 ### Security
 
-T3 drives assistant CLIs that execute code in the web container and it has no
-authentication of its own. Anyone who can reach the direct port controls those assistants
-and, through them, the project. Prefer listing the specific addresses you need over
-`0.0.0.0`, which also publishes T3 on coffee-shop Wi-Fi and every other attached network,
-and leave remote access off when it is not needed.
+T3 drives assistant CLIs that execute code in the web container, so a client connected to
+T3 controls those assistants and, through them, the project. Reaching the port is not
+enough on its own: T3 only lets in clients that have paired with a one-time pairing token
+or link, and each paired client gets a session that you can revoke.
+
+To make a new pairing link while `ddev t3 start` is running:
+
+```bash
+ddev exec 't3 pair --base-dir "/mnt/ddev-global-cache/assistant-t3/${DDEV_SITENAME}"'
+```
+
+It prints a one-time token and a pairing URL. The URL uses the web container's own
+address, so open its `/pair#token=...` part on one of the URLs `ddev t3 start` prints
+instead, for example `http://127.0.0.1:<direct-port>/pair#token=<token>`.
+
+The link expires after 5 minutes unless you pass `--ttl`, for example `--ttl 15m`. Until
+then anyone who has it can pair, so treat pairing links, tokens and their QR codes like
+passwords. To list the paired sessions and revoke one:
+
+```bash
+ddev exec 't3 auth session list --base-dir "/mnt/ddev-global-cache/assistant-t3/${DDEV_SITENAME}"'
+ddev exec 't3 auth session revoke <session-id> --base-dir "/mnt/ddev-global-cache/assistant-t3/${DDEV_SITENAME}"'
+```
+
+Pairing is then the only thing between a network and the project. Prefer listing the
+specific addresses you need over `0.0.0.0`, which also publishes T3 on coffee-shop Wi-Fi
+and every other attached network, and leave remote access off when it is not needed.
 
 ## Advanced Customization
 
