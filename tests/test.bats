@@ -75,15 +75,7 @@ health_checks() {
     done
   fi
 
-  run grep -F '"enableAssistantStreaming": false' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"automaticGitFetchInterval": 30000' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"instanceId": "codex"' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"model": "gpt-5.4-mini"' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"opencode":' ".ddev/t3/settings.json"
+  run grep -F '"defaultThreadEnvMode": "local"' ".ddev/t3/settings.json"
   assert_success
 
   # The t3 npm package is a launcher with no dependencies, so the image needs
@@ -231,6 +223,20 @@ EOF
   assert_success
   read -r _ _ expected_direct_port < <(expected_ports_for_project "${PROJNAME}")
   health_checks 21000 21001 3774 127.0.0.1 "${expected_direct_port}"
+
+  # T3 rewrites settings that hold legacy keys or default values when it
+  # starts, which would dirty this committed file in every project. The checks
+  # above started T3, so the default file must be unchanged. "install from
+  # release" shares health_checks, so this stays out of it until a release has
+  # the new default.
+  run cat .ddev/t3/settings.json
+  assert_output "$(cat <<'JSON'
+{
+  "defaultThreadEnvMode": "local",
+  "newWorktreesStartFromOrigin": false
+}
+JSON
+)"
 
   # "ddev t3 start" refuses a Node.js version outside the engines field of the
   # installed t3 package. Raising it in place checks that without a rebuild.

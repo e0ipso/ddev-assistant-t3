@@ -242,49 +242,8 @@ post_install_actions:
     if [ ! -f t3/settings.json ] || [ "$(tr -d '[:space:]' < t3/settings.json)" = "{}" ]; then
       cat > t3/settings.json <<'EOF'
     {
-      "enableAssistantStreaming": false,
-      "enableProviderUpdateChecks": true,
-      "automaticGitFetchInterval": 30000,
       "defaultThreadEnvMode": "local",
-      "newWorktreesStartFromOrigin": false,
-      "addProjectBaseDirectory": "",
-      "textGenerationModelSelection": {
-        "instanceId": "codex",
-        "model": "gpt-5.4-mini"
-      },
-      "observability": {
-        "otlpTracesUrl": "",
-        "otlpMetricsUrl": ""
-      },
-      "providers": {
-        "codex": {
-          "enabled": true,
-          "binaryPath": "codex",
-          "homePath": "",
-          "shadowHomePath": ""
-        },
-        "claudeAgent": {
-          "enabled": true,
-          "binaryPath": "claude",
-          "homePath": "",
-          "launchArgs": ""
-        },
-        "cursor": {
-          "enabled": true,
-          "binaryPath": "agent",
-          "apiEndpoint": ""
-        },
-        "grok": {
-          "enabled": true,
-          "binaryPath": "grok"
-        },
-        "opencode": {
-          "enabled": true,
-          "binaryPath": "opencode",
-          "serverUrl": "",
-          "serverPassword": ""
-        }
-      }
+      "newWorktreesStartFromOrigin": false
     }
     EOF
     fi
