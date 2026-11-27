@@ -75,16 +75,10 @@ health_checks() {
     done
   fi
 
-  run grep -F '"enableAssistantStreaming": false' ".ddev/t3/settings.json"
+  run grep -F '"defaultThreadEnvMode": "local"' ".ddev/t3/settings.json"
   assert_success
-  run grep -F '"automaticGitFetchInterval": 30000' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"instanceId": "codex"' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"model": "gpt-5.4-mini"' ".ddev/t3/settings.json"
-  assert_success
-  run grep -F '"opencode":' ".ddev/t3/settings.json"
-  assert_success
+  local settings_before
+  settings_before="$(cat .ddev/t3/settings.json)"
 
   # The t3 npm package is a launcher with no dependencies, so the image needs
   # no compilers, and running it during the build would download the runtime
@@ -118,6 +112,11 @@ health_checks() {
   assert_output --partial "https://${PROJNAME}.ddev.site:${expected_https_port}"
   assert_output --partial "Starting T3 in the web container"
   refute_output --partial "EROFS"
+
+  # T3 rewrites settings that hold legacy keys or default values on start, which
+  # would dirty this committed file in every project.
+  run cat .ddev/t3/settings.json
+  assert_output "${settings_before}"
 
   if [ -n "${expected_direct_bind_addresses}" ]; then
     assert_output --partial ":${expected_direct_port} (direct"
