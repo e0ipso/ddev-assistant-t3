@@ -32,11 +32,38 @@ T3 runs on the project's Node.js version, and `ddev t3 start` refuses versions t
 | Command | Description |
 | ------- | ----------- |
 | `ddev t3 start` | Start `t3 serve` in the web container and stream logs |
+| `ddev t3 pair` | Print a pairing link for the running T3 that uses the project URL |
 | `ddev t3 help` | Show command help |
 
 `ddev t3 start` prints the HTTP and HTTPS URLs before starting T3. Press `Ctrl-C` to stop T3.
 
 Those URLs only work on the machine running DDEV. To reach T3 from another machine, see [Remote access](#remote-access-tailscale-lan).
+
+## Connecting the desktop app
+
+With T3 running, run this in another terminal:
+
+```bash
+ddev t3 pair
+```
+
+It prints a pairing URL and a `t3code://` app link on the project's HTTPS URL, for example `https://<project>.ddev.site:<https-port>/pair#token=...`. Open the app link, or add the pairing URL as a remote environment in the T3 desktop app. The token expires after 5 minutes unless you pass `--ttl`, for example `--ttl 15m`, and `--label` names the device in T3's connections list.
+
+Don't pair with the "Connection string" or "Pairing URL" that `ddev t3 start` shows. T3 builds those from the web container's IP address, which changes when DDEV recreates the container, and the desktop app keeps the address it paired through. A connection paired through the project URL survives `ddev restart`, `ddev poweroff` and reboots:
+
+- The ports are fixed in `.ddev/config.assistant-t3.yaml`, and `ddev-router` finds the container by its service name, not its IP.
+- T3's pairings and sessions live in the project's state volume. A session lasts 30 days and renews while the app is connected.
+- The desktop app reconnects by itself once T3 is running again.
+
+`*.ddev.site` resolves to `127.0.0.1` through public DNS, so without a network connection the name stops resolving once the cached answer expires. To work offline, add the project to `/etc/hosts` on your machine:
+
+```text
+127.0.0.1 <project>.ddev.site
+```
+
+The HTTPS URL uses DDEV's mkcert certificate. `mkcert -install`, part of DDEV's installation, adds its CA to the system and browser trust stores that the desktop app uses.
+
+`ddev-router` terminates TLS and reports the original scheme to T3 in the `X-Forwarded-Proto` header. For WebSocket upgrades it sends `wss`, which T3 doesn't recognise as TLS, so T3 would check the desktop app's DPoP proof against an `http://` URL and refuse the WebSocket with "could not establish a WebSocket connection". The add-on writes `.ddev/traefik/config/assistant-t3.yaml`, which routes the HTTPS port through a middleware that always sends `https`. Delete its `# assistant-t3-generated` line to keep your own changes; reinstalling and removing the add-on then leave the file alone.
 
 This add-on does not install or validate assistant provider CLIs such as Claude, Codex, Gemini, Grok, OpenCode, or Cursor Agent. Install those separately in the `web` container when needed.
 
@@ -69,8 +96,17 @@ ddev restart
 ```
 
 Local browsers keep using `http://127.0.0.1:<direct-port>` and tailnet peers use
-`http://100.91.141.70:<direct-port>`, with nothing exposed to any other network. Setting
-the value to `0.0.0.0` publishes on every interface instead, and setting it to nothing at
+`http://100.91.141.70:<direct-port>`, with nothing exposed to any other network.
+
+To pair another device over the tailnet, put the machine's MagicDNS name and the direct
+port in the link. MagicDNS names stay the same, and they resolve to the Tailscale IP that
+T3 is published on:
+
+```bash
+ddev t3 pair --base-url http://<machine>.<tailnet>.ts.net:<direct-port>
+```
+
+Setting the value to `0.0.0.0` publishes on every interface instead, and setting it to nothing at
 all leaves only the `ddev-router` ports.
 
 `ddev t3 start` then prints the direct address alongside the project URLs. The direct
@@ -128,6 +164,7 @@ Configuration lives in these files:
 | `.ddev/config.assistant-t3.yaml` | Generated DDEV web port exposure |
 | `.ddev/docker-compose.assistant-t3.yaml` | Generated T3 state volume mount, and direct host port publishing when remote access is enabled |
 | `.ddev/t3/settings.json` | T3 server settings, using T3's settings schema |
+| `.ddev/traefik/config/assistant-t3.yaml` | Generated `ddev-router` override that sends `X-Forwarded-Proto: https` for WebSocket upgrades on the HTTPS port |
 
 T3 keeps its runtime state outside the project `.ddev` directory, in the Docker volume `ddev-<project>-assistant`, which the `web` container mounts at `/mnt/ddev-global-cache/assistant-t3`. The state includes device pairings, the server identity, T3's database and the downloaded runtime, so it survives `ddev restart`, `ddev poweroff` and web image rebuilds. Each project has its own volume, so no other project's containers can read its T3 credentials. The add-on links T3's runtime `settings.json` back to `.ddev/t3/settings.json` so the user-editable server settings remain safe to commit.
 
