@@ -177,6 +177,35 @@ EOF
   T3CODE_RUNTIME_HOME="${t3_runtime_home}"
 }
 
+# Add the DDEV app root as a T3 project once per state volume, so a fresh T3
+# opens on this project rather than an empty list. The marker keeps a project
+# the user removed or archived from coming back: "t3 project add" would create
+# a removed one again and unarchive an archived one. Deleting only T3's
+# database leaves the marker behind, so that project is not added again.
+# Call after T3CODE_HOME is exported: the npm launcher downloads its runtime
+# there and ignores --base-dir. "t3 project add" exists since 0.0.16; on older
+# versions, and on any other failure, warn and retry on the next start.
+seed_project() {
+  local marker="${T3CODE_HOME}/.ddev-project-seeded"
+  local title="${DDEV_SITENAME:-${DDEV_PROJECT:-$(basename "${DDEV_APPROOT_DIR}")}}"
+  local output
+
+  [ -e "${marker}" ] && return 0
+
+  # T3 prints its errors on stdout, so capture both streams.
+  if output="$(t3 project add "${DDEV_APPROOT_DIR}" --title "${title}" --base-dir "${T3CODE_HOME}" --log-level warn 2>&1)"; then
+    echo "assistant-t3: added ${DDEV_APPROOT_DIR} to T3 as project '${title}'"
+    touch "${marker}"
+  # T3 prints "An active project already exists for '<path>'." when the
+  # project is there already. If a release rewords it, this warns every start.
+  elif [[ "${output}" == *"already exists"* ]]; then
+    touch "${marker}"
+  else
+    echo "assistant-t3: could not add ${DDEV_APPROOT_DIR} to T3 as a project; will retry on the next start" >&2
+    printf '%s\n' "${output%%$'\n'*}" >&2
+  fi
+}
+
 # T3 only uses Node.js to run its npm launcher, so check the container's Node.js
 # against the engines field of the installed t3 package rather than a list kept
 # here. Releases 0.0.41 to 0.1.0 don't declare one, so they get no check. If
@@ -286,6 +315,7 @@ EOF
 
   export T3CODE_HOME="${T3CODE_RUNTIME_HOME}"
   cd "${DDEV_APPROOT_DIR}"
+  seed_project
   exec t3 serve --mode web --host 0.0.0.0 --port "${container_port}" --base-dir "${T3CODE_HOME}" --no-browser "$@"
 }
 
